@@ -67,4 +67,4 @@ void tlog(char * id, char * text, int p);
 // 014 : Web GridMap v1, and cur selected Band/Store shown
 // 015 : Web Robinson zoom GridMap, mouseover grid info, Logged Seen btn
 // 016 : Cleanout and prepare for github sbitx-oz7bx v3.02.0016
-#define VER_STR "sbitx v3.051"
+#define VER_STR "sbitx v3.051 brought you by the 64 bit dev team"
