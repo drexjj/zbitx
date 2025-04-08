@@ -8,5 +8,5 @@ date
 cd /home/pi/sbitx
 git remote set-url origin https://github.com/drexjj/zbitx.git
 git pull
-./build zbitx
+./build sbitx
 echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"

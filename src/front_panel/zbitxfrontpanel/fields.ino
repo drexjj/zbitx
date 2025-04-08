@@ -550,11 +550,9 @@ void field_draw(struct field *f){
 		f->draw(f);
 		return;
 	}
-  if (f->type == FIELD_WATERFALL){
-    screen_fill_rect(f->x, f->y, f->w, 48, TFT_BLACK);
-  }
-  else if (f->type != FIELD_FT8 && f->type != FIELD_LOGBOOK && f->type != FIELD_KEY
-		&& f->type != FIELD_STATIC && f->type != FIELD_TITLE){
+	if (f->type != FIELD_WATERFALL && f->type != FIELD_FT8 && f->type != FIELD_LOGBOOK && f->type != FIELD_KEY
+		&& f->type != FIELD_STATIC && f->type != FIELD_TITLE &&
+		f->type != FIELD_CONSOLE){
     //skip the background fill for the console on each character update
     screen_fill_round_rect(f->x+2, f->y+2, f->w-4, f->h-4, f->color_scheme);
     if (f == f_selected /*|| f->type == FIELD_KEY*/)
@@ -608,7 +606,6 @@ void field_draw(struct field *f){
         TFT_WHITE, ZBITX_FONT_NORMAL);
 			}
       break;
-
   }
 }
 

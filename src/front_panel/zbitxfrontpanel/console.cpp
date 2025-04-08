@@ -26,6 +26,9 @@ void console_init(){
 	memset(console_buffer, 0, sizeof(console_buffer));
 }
 
+//draw full the first time
+static int8_t redraw_full = 1;
+
 void console_update(struct field *f, const char *style, const char *text){
 	struct text_line *t = console_buffer+ current_line;
 	
@@ -33,7 +36,7 @@ void console_update(struct field *f, const char *style, const char *text){
 	while(*text){
 		//move to the next line if the char count or the extent exceeds the width
 		if (current_column >= (MAX_LINE_LENGTH-1) ||
-			(screen_text_width(t->buff, 2) + font_width2[*text]) >= f->w ||
+			(screen_text_width(t->buff, 2) + font_width2[*text]) >= f->w - 4 ||
 			*text == '\n'){
 			current_line++;
 			if (current_line >= MAX_LINES)
@@ -41,6 +44,7 @@ void console_update(struct field *f, const char *style, const char *text){
 			t = console_buffer + current_line;
 			t->buff[0] = 0;
 			current_column = 0;
+			redraw_full = 1;
 //			Serial.printf("current line %d\n", current_line);
 		}
 		int end = strlen(t->buff);
@@ -51,17 +55,24 @@ void console_update(struct field *f, const char *style, const char *text){
 }
 
 void console_draw(struct field *f){
-	int line = current_line - (f->h / 16) + 1;
+	int line = current_line;
+	int i = f->h/16 - 1;
+	if (redraw_full){
+	 	line = current_line - (f->h / 16) + 1;
+		i = 0;
+    screen_fill_rect(f->x+2, f->y+2, f->w-4, f->h-4, SCREEN_BACKGROUND_COLOR);
+	}
 	if (line < 0)
 		line += MAX_LINES;
 
 	struct text_line *t = console_buffer+ line;
-	//Serial.printf("drawng frome line %d\n", line);
-	for (int i = 0; i < f->h/16; i++){
+	while (i < f->h/16){
 		screen_draw_text(t->buff, -1, f->w+2, f->y+(i *16), TFT_GREEN, 2);
 		line ++;
 		if (line >= MAX_LINES)
 			line = 0;
 		t = console_buffer + line; 
+		i++;
 	}
+	redraw_full = 0;
 }

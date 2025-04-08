@@ -65,6 +65,7 @@ uint16_t inline heat_map(int v){
 
 void waterfall_draw(struct field *f){
 
+  screen_fill_rect(f->x, f->y, f->w, 48, TFT_BLACK);
 	// clip the bandwidth strip
 	int bx = f->x + f->w/2 + bandwidth_start;
 	if (bx < f->x)
