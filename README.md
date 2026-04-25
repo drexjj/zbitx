@@ -17,6 +17,8 @@ A huge thank you to everyone who contributes their time and expertise to this pr
 
 The files here are designed to work on the modified, 32-bit version provided in the [Releases](https://github.com/drexjj/zbitx/releases) section.
 
+You will also need the modified front panel display firmware (UF2 file) found at [https://github.com/drexjj/zbitxfrontpanel](https://github.com/drexjj/zbitxfrontpanel/releases)
+
 
 ## 🔴 Backup Your Data First!
 
