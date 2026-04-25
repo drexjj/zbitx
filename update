@@ -7,7 +7,9 @@ echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 date
 cd $HOME/sbitx
 git stash --include-untracked
+git remote set-url origin https://github.com/afarhan/zbitxv2.git
 git pull
+git checkout main
 cd $HOME/sbitx/src/ft8_lib
 make
 sudo make install
