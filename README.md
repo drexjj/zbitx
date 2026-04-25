@@ -53,9 +53,7 @@ A preconfigured, downloadable Raspberry Pi Zero 2W image file will be available 
 
 ## 👏 Contributors & Credits
 
-A huge thank you to the contributors who have played a vital role in this project!
-
-### Special Thanks To Farhan, VU2ESE for creating the initial project:
+A huge thank you to the contributors who have played a vital role in this project! including Farhan, VU2ESE for creating the initial project.
 
 
 
