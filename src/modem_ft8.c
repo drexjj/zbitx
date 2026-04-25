@@ -14,7 +14,6 @@
 #include "sdr.h"
 #include "sdr_ui.h"
 #include "modem_ft8.h"
-#include "logbook.h"
 
 #include "ft8_lib/common/common.h"
 #include "ft8_lib/common/wave.h"
@@ -485,23 +484,20 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
            decoded_hashtable[idx_hash] = &decoded[idx_hash];
            ++num_decoded;
 
-					char buff[1000];
-          sprintf(buff, "%s %3d %+03d %-4.0f ~  %s\n", time_str, 
-						cand->score, cand->snr, freq_hz, message.text);
-
-
-				//message_add(char *mode, unsigned int frequency, int outgoing, char *message);
-					message_add("FT8", freq_hz, 0, message.text);
-					if (strstr(buff, mycallsign_upper)){
-						write_console(FONT_FT8_REPLY, buff);
-						ft8_process(buff, FT8_CONTINUE_QSO);
-					}
-					else 
-						write_console(FONT_FT8_RX, buff);
-
-	//				save_message('R', cand->score, cand-snr,freq_hz, message.text);
-				n_decodes++;
-      }
+			char buff[1000];
+            sprintf(buff, "%s %3d %+03d %-4.0f ~  %s\n", time_str, 
+			  cand->score, cand->snr, freq_hz, message.text);
+			//For troubleshooting you can display the time offset - n1qm
+			//sprintf(buff, "%s %d %+03d %-4.0f ~  %s\n", time_str, cand->time_offset,
+			//  cand->snr, freq_hz, message.text);
+			if (strstr(buff, mycallsign_upper)){
+				write_console(FONT_FT8_REPLY, buff);
+				ft8_process(buff, FT8_CONTINUE_QSO);
+			}
+			else 
+				write_console(FONT_FT8_RX, buff);
+			n_decodes++;
+        }
     }
     //LOG(LOG_INFO, "Decoded %d messages\n", num_decoded);
 
@@ -541,7 +537,6 @@ static void ft8_start_tx(int offset_seconds){
 
   sprintf(buff, "%02d%02d%02d  TX +00 %04d ~  %s\n", t->tm_hour, t->tm_min, t->tm_sec, ft8_pitch, ft8_tx_text);
 	write_console(FONT_FT8_TX, buff);
-	message_add("FT8", ft8_pitch, 1, ft8_tx_text);
 
 	ft8_tx_nsamples = sbitx_ft8_encode(ft8_tx_text, ft8_pitch, ft8_tx_buff, false); 
 	ft8_tx_buff_index = offset_seconds * 96000;
@@ -755,9 +750,7 @@ int ft8_message_tokenize(char *message){
 void ft8_on_start_qso(char *message){
 	modem_abort();
 	tx_off();
-	if (strcmp(call, m1)) { // only wipe if new call
-		call_wipe();
-	}
+	call_wipe();
 
 	//for cq message that started on 0 or 30th second, use the 15 or 45 and
 	//vice versa
@@ -767,12 +760,7 @@ void ft8_on_start_qso(char *message){
 	else
 		ft8_tx1st = 1;
 
-    if (!strcmp(m2, mycall)){ // own transmission clicked - restart qso
-		field_set("CALL", m1);
-		call = m1;
-		sprintf(reply_message, "%s %s %s", call, mycall, mygrid); //
-	}
-	else if (!strcmp(m1, "CQ")){
+	if (!strcmp(m1, "CQ")){
 		if (m4[0]){
 			field_set("CALL", m3);
 			field_set("EXCH", m4);
@@ -787,8 +775,6 @@ void ft8_on_start_qso(char *message){
 	}
 	//whoa, someone cold called us
 	else if (!strcmp(m1, mycall)){
-		char cur_call[20];
-	    get_field_value_by_label("CALL", cur_call);
 		field_set("CALL", m2);
 		field_set("SENT", signal_strength);
 		//they might have directly sent us a signal report
@@ -799,9 +785,6 @@ void ft8_on_start_qso(char *message){
 		else {
 			field_set("RECV", m3);
 			sprintf(reply_message, "%s %s R%s", call, mycall, signal_strength);
-			if (strcmp(m2, cur_call)){ // other  than previous caller - clear EXCH
-				field_set("EXCH", "");
-			}
 		}
 	}
 	else { //we are breaking into someone else's qso
@@ -812,7 +795,7 @@ void ft8_on_start_qso(char *message){
 			field_set("EXCH", "");
 		}
 		field_set("SENT", signal_strength);
-		sprintf(reply_message, "%s %s %s", call, mycall, mygrid); //signal_strength);
+		sprintf(reply_message, "%s %s %s", call, mycall, signal_strength);
 	}
 	field_set("NR", mygrid);
 	ft8_tx(reply_message, tx_pitch);
@@ -831,15 +814,14 @@ void ft8_on_signal_report(){
 		sprintf(reply_message, "%s %s R%s", call, mycall, report_send);  	
 		ft8_tx(reply_message, tx_pitch);
 	}
-	enter_qso();
+
+	//Disabled this because of early logging - W9JES
+	//enter_qso();
 }
 
 void ft8_process(char *message, int operation){
 	char buff[100], reply_message[100], *p;
 	int auto_respond = 0;
-
-	printf("ft8_process:%d[%s]\n", operation, message);
-
 
 	if (ft8_message_tokenize(message) == -1)
 		return;
@@ -875,8 +857,10 @@ void ft8_process(char *message, int operation){
 		return;
 	}
 
+
 	if (!strcmp(m3, "73")){
 		ft8_abort();
+		enter_qso(); // W9JES
 		ft8_repeat = 0;
 		return;
 	}

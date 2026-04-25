@@ -15,15 +15,16 @@
 	The modem_poll is called about 10 to 20 times a second from 
 	the 'user interface' thread.
 
-	The key is physically read from the GPIO by calling key_poll()
-	the key_poll stores the values read from the ISR of the PTT(DOT) and DASH
-	gpio lines
+	The key is physically read from the GPIO by calling key_poll() through
+	modem_poll and the value is stored as cw_key_state.
+
+	The cw_get_sample just reads this cw_key_state instead of polling the GPIO.
 
 	the cw_read_key() routine returns the next dash/dot/space/, etc to be sent
 	the word 'symbol' is used to denote a dot, dash, a gaps that are dot, dash or
 	word long. These are defined in sdr.h (they shouldn't be) 
 	
-	Txing:
+	Rxing:
 	The CW decoder is entirely written from the scratch after a preliminary
 	read of a few Arduino decoders.
 
@@ -69,6 +70,7 @@
 	
 */
 #include <stdio.h>
+#include <sys/time.h>   //added to support debug timing code
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
@@ -89,7 +91,6 @@
 #include "sdr_ui.h"
 #include "modem_cw.h"
 #include "sound.h"
-
 
 struct morse_tx {
 	char c;
@@ -140,12 +141,19 @@ struct morse_tx morse_tx_table[] = {
 	{'?', "..--.."},
 	{'/', "-..-."},
 	{' ', " "},
-	{'[', ".-.-."},
-	{']', ".-..."},
-	{'+', ".-.-."},
-	{'&', "-...-"},
+	{'=', "-...-"},   //BT (prosigns based upon k40/k42 keyers) W0ANM
+	{'<', ".-.-."},   //AR W0ANM
+	{'>', "...-.-"},  //SK W0ANM
+	//{'+', ".-.-."},
+	{'+', "--.- .-. .-.. ..--.."}, //qrl ?  W0ANM
+	{'(', "-.--."},   //KN
+	//{'[', ".-.-."},
+	{'[', "--.- .-. --.."},   //qrz  W0ANM
+	//{']', ".-..."},
+	{']', "--.- ... .-.."},   //qsl  W0ANM
+	{':', ".-..."},   //AS  W0ANM
 	{'\'', "--..--"},
-	{'=', "-...-.-"}, 
+	{'&', "-...-"},
 };
 
 struct morse_rx {
@@ -206,8 +214,8 @@ struct morse_rx morse_rx_table[] = {
 	{"<AS>", ".-..."},
 	{"<STOP>", ".-.-."},
 	{"<BT>", "-...-"},
-	{"vu2", "...-..-..---"},
-	{"vu3", "...-..-...--"},
+	//{"vu2", "...-..-..---"}, erroneous  W9JES
+	//{"vu3", "...-..-...--"}, erroneous  W9JES
 	{"5nn", ".....-.-."},
 	{"ur", "..-.-."},
 };
@@ -259,10 +267,11 @@ struct cw_decoder decoder;
 /* cw tx state variables */
 static unsigned long millis_now = 0;
 
+static int cw_key_state = 0;
 static int cw_period;
 static struct vfo cw_tone, cw_env;
-static int keydown_count=0;			//counts down pause afer a keydown is finished
-static int keyup_count = 0;			//counts down how long a key is held down
+static int keydown_count=0;
+static int keyup_count = 0;
 static float cw_envelope = 1;		//used to shape the envelope
 static int cw_tx_until = 0;			//delay switching to rx, expect more txing
 static int data_tx_until = 0;
@@ -280,8 +289,7 @@ static int cw_bytes_available = 0; //chars available in the tx queue
 #define CW_MAX_SYMBOLS 12
 char cw_key_letter[CW_MAX_SYMBOLS];
 
-//the of morse code needs to translate into CW_DOT, CW_DASH, etc
-static uint8_t cw_get_next_symbol(){
+static uint8_t cw_get_next_symbol(){  //symbol to translate into CW_DOT, CW_DASH, etc
 
 	if (!symbol_next)
 		return CW_IDLE;
@@ -305,19 +313,15 @@ static uint8_t cw_get_next_symbol(){
 }
 
 
-// cw_read_key() routine is called 96000 times a second
-//it can't poll gpio lines or text input, those are done in modem_poll()
+//cw_read_key() is called 96000 times a second
+//it should not poll gpio lines or text input, those are done in modem_poll()
 //and we only read the status from the variable updated by modem_poll()
 
 static int cw_read_key(){
 	char c;
 
-	int cw_key_state = key_poll();
-
-	//preferance to the keyer activity
+	//process cw key before other cw inputs (macros, keyboard)
 	if (cw_key_state != CW_IDLE) {
-		//return cw_key_state;
-		//cw_key_state = key_poll();
 		return cw_key_state;
 	}
 
@@ -351,128 +355,639 @@ static int cw_read_key(){
 		return CW_IDLE;
 }
 
-float cw_tx_get_sample(){
-	float sample = 0;
+// Function prototype for the state machine handler
+void handle_cw_state_machine(uint8_t, uint8_t);
 
-	// for now, updatw time and cw pitch
-	if (!keydown_count && !keyup_count){
-		millis_now = sbitx_millis();
-		if (cw_tone.freq_hz != get_pitch())
-			vfo_start(&cw_tone, get_pitch(), 0);
-	}
+// use input from macro playback, keyboard or key/paddle to key the transmitter
+// keydown and keyup times
+float cw_tx_get_sample() {
+  float sample = 0;
+  uint8_t state_machine_mode;
+  uint8_t symbol_now;
+  
+  if ((keydown_count == 0) && (keyup_count == 0)) {
+    // note current time to use with UI value of CW_DELAY to control break-in
+    millis_now = millis();
+    // set CW pitch if needed
+    if (cw_tone.freq_hz != get_pitch())
+      vfo_start( &cw_tone, get_pitch(), 0);
+  }
+  
+  // check to see if input available from macro or keyboard
+  if ((cw_bytes_available > 0) || (symbol_next != NULL)) {
+    state_machine_mode = CW_KBD;
+    cw_current_symbol = CW_IDLE;
+  } else
+    state_machine_mode = cw_mode;
+  
+  // iambic modes require polling key during keydown/keyup
+  // other modes only check when idle
+  if (((state_machine_mode == CW_STRAIGHT || 
+        state_machine_mode == CW_BUG ||
+        state_machine_mode == CW_ULTIMATIC || 
+        state_machine_mode == CW_KBD) && 
+        (keydown_count == 0 && keyup_count == 0))
+        ||
+        (state_machine_mode == CW_IAMBIC || 
+        state_machine_mode == CW_IAMBICB)) {
+    symbol_now = cw_read_key();
+    handle_cw_state_machine(state_machine_mode, symbol_now);
+  }
 
-	uint8_t symbol_now = cw_read_key();
+  // key the transmitter with some shaping
+  // at 20 wpm  a CW_DOT starts with keydown_count = 5760
+  if (keydown_count > 0) {
+    if(cw_envelope < 0.999)
+      cw_envelope = ((vfo_read(&cw_env)/FLOAT_SCALE) + 1)/2;
+    keydown_count--;
+  } else {  // countdown all the keydown_count before doing keyup_count
+    if(cw_envelope > 0.001)
+      cw_envelope = ((vfo_read(&cw_env)/FLOAT_SCALE) + 1)/2;
+    if (keyup_count > 0)
+      keyup_count--;
+  }
+  sample = (vfo_read(&cw_tone) / FLOAT_SCALE) * cw_envelope;
+  
+  // keep extending 'cw_tx_until' while we're sending
+  if ((symbol_now == CW_DOWN) || (symbol_now == CW_DOT) ||
+      (symbol_now == CW_DASH) || (symbol_now == CW_SQUEEZE) ||
+      (keydown_count > 0))
+    cw_tx_until = millis_now + get_cw_delay();
+  // if macro or keyboard characters remain in the buffer
+  // prevent switching from xmit to rcv and cutting off macro
+  if (cw_bytes_available != 0)
+    cw_tx_until = millis_now + 1000;
 
-	switch(cw_current_symbol){
-	case CW_IDLE:		//this is the start case 
-		if (symbol_now == CW_DOWN){
-			keydown_count = 2000; //add a few samples, to debounce 
-			keyup_count = 0;
-			cw_current_symbol = CW_DOWN;
-		}
-		else if (symbol_now & CW_DOT){
-			keydown_count = cw_period;
-			keyup_count = cw_period;
-			cw_current_symbol = CW_DOT;
-			cw_last_symbol = CW_IDLE;
-		}
-		else if (symbol_now & CW_DASH){
-			keydown_count = cw_period * 3;
-			keyup_count = cw_period;
-			cw_current_symbol = CW_DASH;
-			cw_last_symbol = CW_IDLE;
-		}
-		else if (symbol_now & CW_DASH_DELAY){
-			keydown_count = 0;
-			keyup_count = cw_period * 3;
-			cw_current_symbol = CW_DOT_DELAY;
-		}
-		else if (symbol_now & CW_WORD_DELAY){
-			keydown_count = 0;
-			keyup_count = cw_period * 6;
-			cw_current_symbol = CW_DOT_DELAY;
-		}
-		//else just continue in CW_IDLE
-		break;
-	case CW_DOWN:		//the straight key
-		if (symbol_now == CW_DOWN){ //continue, keep up the good work
-			keydown_count = 2000;
-			keyup_count = 0;
-		}
-		else{ // ok, break it up
-			keydown_count = 0;
-			keyup_count = 0;
-			cw_current_symbol = CW_IDLE;//go back to idle
-		}
-		break;
-	case CW_DOT:
-		if ((symbol_now & CW_DASH) && cw_next_symbol == CW_IDLE){
-			cw_next_symbol = CW_DASH;	
-		}
-		if (keydown_count == 0){
-			keyup_count = cw_period;
-			cw_last_symbol = CW_DOT;
-			cw_current_symbol = CW_DOT_DELAY;
-		}
-		break;
-	case CW_DASH:
-		if ((symbol_now & CW_DOT) && cw_next_symbol == CW_IDLE){
-			cw_next_symbol = CW_DOT;	
-		}
-		if (keydown_count == 0){
-			keyup_count = cw_period;
-			cw_last_symbol = CW_DASH;
-			cw_current_symbol = CW_DOT_DELAY;
-		}
-		break;
-	case CW_DASH_DELAY:
-	case CW_WORD_DELAY:
-	case CW_DOT_DELAY:
-		if (keyup_count == 0){
-			cw_current_symbol = cw_next_symbol;
-			if (cw_current_symbol == CW_DOT){
-				keydown_count = cw_period;
-				keyup_count = cw_period;
-			}
-			if (cw_current_symbol == CW_DASH){
-				keydown_count = cw_period * 3;
-				keyup_count = cw_period;
-			}
-			cw_last_symbol = CW_DOT_DELAY;
-			cw_next_symbol = CW_IDLE;
-		}
-		if (cw_mode == CW_IAMBICB){
-			if (cw_next_symbol == CW_IDLE && cw_last_symbol == CW_DOT && (symbol_now & CW_DASH)){
-				cw_next_symbol = CW_DASH;
-			}
-			if (cw_next_symbol == CW_IDLE && cw_last_symbol == CW_DASH && (symbol_now & CW_DOT)){
-				cw_next_symbol = CW_DASH;
-			}
-		}
-		break;
-	}
-
-	// shape the cw keying
-	if (keydown_count  > 0){
-		if(cw_envelope < 0.999)
-			cw_envelope = ((vfo_read(&cw_env)/FLOAT_SCALE) + 1)/2; 
-			keydown_count--;
-	}
-	else { //keydown_count is zero
-		if(cw_envelope > 0.001)
-			cw_envelope = ((vfo_read(&cw_env)/FLOAT_SCALE) + 1)/2; 
-		if (keyup_count > 0)
-			keyup_count--;
-	}
-
-	sample = (vfo_read(&cw_tone)/FLOAT_SCALE) * cw_envelope;
-
-	if (keyup_count > 0 || keydown_count > 0){
-		cw_tx_until = millis_now + get_cw_delay(); 
-	}
-	return sample / 8;
+  return sample / 8;
 }
 
+
+// This function implements the KB2ML sBitx keyer state machine for each CW mode
+// State machine uses mode, current state and input to determine keydown_count
+// and keyup_count needed to key transmitter.
+void handle_cw_state_machine(uint8_t state_machine_mode, uint8_t symbol_now) {
+  static uint8_t cw_next_symbol_flag = 0;  // used in iambic modes
+  // printf("state_machine_mode %d\n", state_machine_mode);
+  // printf("cw_current_symbol %d\n", cw_current_symbol);
+  // printf("symbol_now %d\n", symbol_now);
+  switch (state_machine_mode) {
+  case CW_STRAIGHT:
+      if (symbol_now == CW_IDLE)
+        cw_current_symbol = CW_IDLE;
+      if (symbol_now == CW_DOWN) {
+        keydown_count = 1; // this is very short, much less than a dit
+        keyup_count = 0;
+        cw_current_symbol = CW_DOWN;
+      }
+    break; // done with CW_STRAIGHT mode
+
+  case CW_BUG:
+    // Vibroplex 'bug' emulation mode.  The 'dit' contact produces
+    // a string of dits at the chosen WPM, the "dash" contact is
+    // completely manual and usually used just for dashes
+    switch (cw_current_symbol) {
+    case CW_IDLE:
+      if (symbol_now == CW_IDLE)
+        cw_current_symbol = CW_IDLE;
+      if (symbol_now == CW_DOT) {
+        keydown_count = cw_period;
+        keyup_count = cw_period;
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        keydown_count = 1;
+        keyup_count = 0;
+        cw_current_symbol = CW_DASH;
+      }
+      if (symbol_now == CW_SQUEEZE) {
+        cw_current_symbol = CW_IDLE;
+      }
+      break; // exit CW_IDLE case
+    case CW_DOT:
+      if (symbol_now == CW_IDLE) {
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_DOT) {
+        keydown_count = cw_period;
+        keyup_count = cw_period;
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        keydown_count = 1; // works like straight key
+        keyup_count = 0;
+        cw_current_symbol = CW_DASH;
+      }
+      break; // exit CW_DOT case
+    case CW_DASH:
+      if (symbol_now == CW_IDLE) {
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_DOT) {
+        keydown_count = cw_period;
+        keyup_count = cw_period;
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        keydown_count = 1;
+        keyup_count = 0;
+        cw_current_symbol = CW_DASH;
+      }
+      break; // exit CW_DASH case
+    }
+    break; // done with CW_BUG mode
+
+  case CW_ULTIMATIC:
+    // when both paddles are squeezed, whichever one was squeezed last gets repeated
+    switch (cw_current_symbol) {
+    case CW_IDLE:
+      if (symbol_now == CW_IDLE) {
+        // do nothing, stay in same state
+      }
+      if (symbol_now == CW_DOT) {
+        keydown_count = cw_period;
+        keyup_count = cw_period;
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        keydown_count = cw_period * 3;
+        keyup_count = cw_period;
+        cw_current_symbol = CW_DASH;
+      }
+      if (symbol_now == CW_SQUEEZE) {
+        keydown_count = cw_period;
+        keyup_count = cw_period;
+        cw_last_symbol = CW_DASH;
+        cw_current_symbol = CW_SQUEEZE;
+      }
+      break; // exit CW_IDLE case
+    case CW_DOT:
+      if (symbol_now == CW_IDLE) {
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_SQUEEZE) {
+        keydown_count = cw_period * 3;
+        keyup_count = cw_period;
+        cw_last_symbol = CW_DASH;
+        cw_current_symbol = CW_SQUEEZE;
+      }
+      if (symbol_now == CW_DOT) {
+        keydown_count = cw_period;
+        keyup_count = cw_period;
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        keydown_count = cw_period * 3;
+        keyup_count = cw_period;
+        cw_current_symbol = CW_DASH;
+      }
+      break; // exit CW_DOT case
+    case CW_DASH:
+      if (symbol_now == CW_IDLE) {
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_SQUEEZE) {
+        keydown_count = cw_period;
+        keyup_count = cw_period;
+        cw_last_symbol = CW_DOT;
+        cw_current_symbol = CW_SQUEEZE;
+      }
+      if (symbol_now == CW_DOT) {
+        keydown_count = cw_period;
+        keyup_count = cw_period;
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        keydown_count = cw_period * 3;
+        keyup_count = cw_period;
+        cw_current_symbol = CW_DASH;
+      }
+      break; // exit CW_DASH case
+    case CW_SQUEEZE:
+      if (symbol_now == CW_IDLE) {
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_SQUEEZE) {
+        if (cw_last_symbol == CW_DOT) {
+          keydown_count = cw_period;
+          cw_last_symbol = CW_DOT;
+        } else {
+          keydown_count = cw_period * 3;
+          cw_last_symbol = CW_DASH;
+        }
+        keyup_count = cw_period;
+        cw_current_symbol = CW_SQUEEZE;
+      }
+      if (symbol_now == CW_DOT) {
+        keydown_count = cw_period;
+        keyup_count = cw_period;
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        keydown_count = cw_period * 3;
+        keyup_count = cw_period;
+        cw_current_symbol = CW_DASH;
+      }
+      break; // exit CW_SQUEEZE case
+    }
+    break; // done with CW_ULTIMATIC mode
+
+  case CW_IAMBIC:
+    // aka iambic A
+    // the keyer stops sending the current bit when you release the paddles
+    
+    // before checking new paddle input, look for a symbol ready to go
+    // don't act on anything else until it is cleared
+    if (cw_next_symbol_flag == 1) {
+      if (keyup_count == 0) {
+        if (cw_next_symbol == CW_DOT) {
+          keydown_count = cw_period;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DOT;
+        } else if (cw_next_symbol == CW_DASH) {
+          keydown_count = cw_period * 3;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DASH;
+        }
+        cw_next_symbol_flag = 0;
+      }
+    goto end_of_iambic;
+    }
+    
+    switch (cw_current_symbol) {
+    case CW_IDLE:
+      if (symbol_now == CW_IDLE) {
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_DOT) {
+        if (keyup_count == 0) {
+          keydown_count = cw_period;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DOT;
+        }
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        if (keyup_count == 0) {
+          keydown_count = cw_period * 3;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DASH;
+        }
+        cw_current_symbol = CW_DASH;
+      }
+      if (symbol_now == CW_SQUEEZE) {
+        if (keyup_count == 0) {
+          keydown_count = cw_period;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DOT;
+          cw_next_symbol = CW_DASH;
+          cw_next_symbol_flag = 1;
+        }
+        cw_current_symbol = CW_SQUEEZE;
+      }
+      break; // exit CW_IDLE case
+    case CW_DOT:
+      if (symbol_now == CW_IDLE) {
+        // do nothing, stay in same state
+      }
+      if (symbol_now == CW_DOT) {
+        // this is a dot following a previous dot
+        if (keyup_count == 0) {
+          keydown_count = cw_period;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DOT;
+        }
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        if (keyup_count == 0) {
+          keydown_count = cw_period * 3;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DASH;
+        } else if (keyup_count > 0) {
+          // early paddle input for next dash
+          cw_next_symbol = CW_DASH;
+          cw_next_symbol_flag = 1;
+        }
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_SQUEEZE) {
+        if (keydown_count > 0) {
+          if (cw_last_symbol == CW_DOT) {
+            cw_next_symbol = CW_DASH;
+            cw_next_symbol_flag = 1;
+          } else if (cw_last_symbol == CW_DASH) {
+            cw_next_symbol = CW_DOT;
+            cw_next_symbol_flag = 1;
+          }
+        }
+        cw_current_symbol = CW_SQUEEZE;
+      }
+      break; // exit CW_DOT case
+    case CW_DASH:
+      if (symbol_now == CW_IDLE) {
+        // do nothing, stay in same state
+      }
+      if (symbol_now == CW_DOT) {
+        if (keyup_count == 0) {
+          keydown_count = cw_period;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DOT;
+        } else if (keyup_count > 0) {
+          // early paddle input for next dot
+          cw_next_symbol = CW_DOT;
+          cw_next_symbol_flag = 1;
+        }
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_DASH) {
+        // this is a dash following a previous dash
+        if (keyup_count == 0) {
+          keydown_count = cw_period * 3;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DASH;
+        }
+        cw_current_symbol = CW_DASH;
+      }
+      if (symbol_now == CW_SQUEEZE) {
+        if (keydown_count > 0) {
+          if (cw_last_symbol == CW_DOT) {
+            cw_next_symbol = CW_DASH;
+            cw_next_symbol_flag = 1;
+          } else if (cw_last_symbol == CW_DASH) {
+            cw_next_symbol = CW_DOT;
+            cw_next_symbol_flag = 1;
+          }
+        }
+        cw_current_symbol = CW_SQUEEZE;
+      }
+      break; // exit CW_DASH case
+    case CW_SQUEEZE:
+      if (symbol_now == CW_IDLE) {
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_DOT) {
+        if (keyup_count == 0) {
+          keydown_count = cw_period;
+          keyup_count = cw_period;
+        }
+        cw_last_symbol = CW_DOT;
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        if (keyup_count == 0) {
+          keydown_count = cw_period * 3;
+          keyup_count = cw_period;
+        }
+        cw_last_symbol = CW_DASH;
+        cw_current_symbol = CW_DASH;
+      }
+      if (symbol_now == CW_SQUEEZE) { // alternate dot and dash
+        if (keyup_count == 0) {
+          if (cw_last_symbol == CW_DOT) {
+            keydown_count = cw_period * 3;
+            keyup_count = cw_period;
+            cw_last_symbol = CW_DASH;
+          } else if (cw_last_symbol == CW_DASH) {
+            keydown_count = cw_period;
+            keyup_count = cw_period;
+            cw_last_symbol = CW_DOT;
+          }
+        }
+        cw_current_symbol = CW_SQUEEZE;
+      }
+      break; // exit CW_SQUEEZE case
+    }
+    end_of_iambic:
+    break; // done with CW_IAMBIC mode
+
+  case CW_IAMBICB:
+    // when both paddles are squeezed, whichever one was squeezed last gets repeated
+    // when both paddles are released the keyer will finish the dit or dah and add
+    // an additional opposite element
+    
+    // before checking new paddle input, look for a symbol ready to go
+    if (cw_next_symbol_flag == 1) {
+      if (keyup_count == 0) {
+        if (cw_next_symbol == CW_DOT) {
+          keydown_count = cw_period;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DOT;
+        } else if (cw_next_symbol == CW_DASH) {
+          keydown_count = cw_period * 3;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DASH;
+        }
+        cw_next_symbol_flag = 0;
+      }
+    goto end_of_iambicB;
+    }
+    
+    switch (cw_current_symbol) {
+    case CW_IDLE:
+      if (symbol_now == CW_IDLE) {
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_DOT) {
+        if (keyup_count == 0) {
+          keydown_count = cw_period;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DOT;
+        } 
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        if (keyup_count == 0) {
+          keydown_count = cw_period * 3;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DASH;
+        }
+        cw_current_symbol = CW_DASH;
+      }
+      if (symbol_now == CW_SQUEEZE) {
+        if (keyup_count == 0) {
+          keydown_count = cw_period;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DOT;
+          cw_next_symbol = CW_DASH;
+          cw_next_symbol_flag = 1;
+        }
+        cw_current_symbol = CW_SQUEEZE;
+      }
+      break; // exit CW_IDLE case
+    case CW_DOT:
+      if (symbol_now == CW_IDLE) {
+        // do nothing, stay in same state
+      }
+      if (symbol_now == CW_DOT) {
+        // this is a dot following a previous dot
+        if (keyup_count == 0) {
+          keydown_count = cw_period;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DOT;
+        }
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        if (keyup_count > 0) {
+          // early paddle input for next dash
+          cw_next_symbol = CW_DASH;
+          cw_next_symbol_flag = 1;
+        } else if (keyup_count == 0) {
+          keydown_count = cw_period * 3;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DASH;
+        }
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_SQUEEZE) {
+        if (keydown_count > 0) {
+          if (cw_last_symbol == CW_DOT) {
+            cw_next_symbol = CW_DASH;
+            cw_next_symbol_flag = 1;
+          } else if (cw_last_symbol == CW_DASH) {
+            cw_next_symbol = CW_DOT;
+            cw_next_symbol_flag = 1;
+          }
+        }
+        cw_current_symbol = CW_SQUEEZE;
+      }
+      break; // exit CW_DOT case
+    case CW_DASH:
+      if (symbol_now == CW_IDLE) {
+        // do nothing, stay in same state
+      }
+      if (symbol_now == CW_DOT) {
+        if (keyup_count > 0) {
+          // early paddle input for next dot
+          cw_next_symbol = CW_DOT;
+          cw_next_symbol_flag = 1;
+        } else if (keyup_count == 0) {
+          keydown_count = cw_period;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DOT;
+        } 
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_DASH) {
+        // this is a dash following a previous dash
+        if (keyup_count == 0) {
+          keydown_count = cw_period * 3;
+          keyup_count = cw_period;
+          cw_last_symbol = CW_DASH;
+        }
+        cw_current_symbol = CW_DASH;
+      }
+      if (symbol_now == CW_SQUEEZE) {
+        if (keydown_count > 0) {
+          if (cw_last_symbol == CW_DOT) {
+            cw_next_symbol = CW_DASH;
+            cw_next_symbol_flag = 1;
+          } else if (cw_last_symbol == CW_DASH) {
+            cw_next_symbol = CW_DOT;
+            cw_next_symbol_flag = 1;
+           }
+        }
+        cw_current_symbol = CW_SQUEEZE;
+      }
+      break; // exit CW_DASH case
+    case CW_SQUEEZE:
+      if (symbol_now == CW_IDLE) {
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_DOT) {
+        if (keyup_count == 0) {
+          keydown_count = cw_period;
+          keyup_count = cw_period;
+        }
+        cw_last_symbol = CW_DOT;
+        cw_current_symbol = CW_DOT;
+      }
+      if (symbol_now == CW_DASH) {
+        if (keyup_count == 0) {
+          keydown_count = cw_period * 3;
+          keyup_count = cw_period;
+        }
+        cw_last_symbol = CW_DASH;
+        cw_current_symbol = CW_DASH;
+      }
+      if (symbol_now == CW_SQUEEZE) { // alternate dot and dash
+        if (keyup_count == 0) {
+          if (cw_last_symbol == CW_DOT) {
+            keydown_count = cw_period * 3;
+            keyup_count = cw_period;
+            cw_last_symbol = CW_DASH;
+          } else if (cw_last_symbol == CW_DASH) {
+            keydown_count = cw_period;
+            keyup_count = cw_period;
+            cw_last_symbol = CW_DOT;
+          }
+        }
+        if (cw_last_symbol == CW_DOT) {
+          cw_next_symbol = CW_DASH;
+          cw_next_symbol_flag = 1;
+        } else {
+          cw_next_symbol = CW_DOT;
+          cw_next_symbol_flag = 1;
+        }
+        cw_current_symbol = CW_SQUEEZE;
+      }
+      break; // exit CW_SQUEEZE case
+    }
+    end_of_iambicB:
+    break; // done with CW_IAMBICB mode
+
+  case CW_KBD:
+    // this mode handles symbols coming from keyboard or macros
+    switch (cw_current_symbol) {
+    case CW_IDLE:
+      if (symbol_now == CW_IDLE) {
+        cw_last_symbol = CW_IDLE;
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_DOT) {
+        keydown_count = cw_period;
+        keyup_count = cw_period;
+        cw_last_symbol = CW_DOT;
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_DASH) {
+        keydown_count = cw_period * 3;
+        keyup_count = cw_period;
+        cw_last_symbol = CW_DASH;
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_DOT_DELAY) {  // this is never used?!
+        keyup_count = cw_period * 1;
+        cw_last_symbol = CW_DOT_DELAY;
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_DASH_DELAY) {  // a NULL
+        if (cw_last_symbol == CW_WORD_DELAY) {
+          // no more delay extension needed
+        } else {
+          // extend single delay after dot or dash to total 3 dit lengths
+          // betweeen characters
+          keyup_count = cw_period * 2;
+        }
+        cw_last_symbol = CW_DASH_DELAY; 
+        cw_current_symbol = CW_IDLE;
+      }
+      if (symbol_now == CW_WORD_DELAY) {  // a space
+        if (cw_last_symbol == CW_DASH_DELAY) {
+          // extend delay after end of character delay four more
+          // dit-lengths to total seven dit lengths
+          keyup_count = cw_period * 4;
+        } else {
+          keyup_count = cw_period * 7;
+        }
+        cw_last_symbol = CW_WORD_DELAY;
+        cw_current_symbol = CW_IDLE;
+      }
+      break;
+    }
+    break; // done with CW_KBD mode
+  } // end of the state machine switch case
+} // end of handle_cw_state_machine function
 
 static FILE *pfout = NULL; //this is debugging out, not used normally
 
@@ -737,7 +1252,10 @@ void cw_init(){
 	cw_rx_bin_init(&decoder.signal, INIT_TONE, N_BINS, SAMPLING_FREQ);
 	
 	//init cw tx with some reasonable values
-	vfo_start(&cw_env, 50, 49044); //start in the third quardrant, 270 degree
+  //cw_env shapes the envelope of the cw waveform
+  //frequency was at 50 (20 ms rise time), changed it to 200 (4 ms rise time)
+  //to improve cw performance at higher speeds
+	vfo_start(&cw_env, 200, 49044); //start in the third quardrant, 270 degree
 	vfo_start(&cw_tone, 700, 0);
 	cw_period = 9600; 		// At 96ksps, 0.1sec = 1 dot at 12wpm
 	cw_key_letter[0] = 0;
@@ -748,6 +1266,7 @@ void cw_init(){
 
 void cw_poll(int bytes_available, int tx_is_on){
 	cw_bytes_available = bytes_available;
+	cw_key_state = key_poll();
 	int wpm  = field_int("WPM");
 	cw_period = (12 * 9600)/wpm;
 
@@ -765,7 +1284,7 @@ void cw_poll(int bytes_available, int tx_is_on){
 	// TX ON if bytes are avaiable (from macro/keyboard) or key is pressed
 	// of we are in the middle of symbol (dah/dit) transmission 
 	
-	if (!tx_is_on && (cw_bytes_available || key_poll() || (symbol_next && *symbol_next)) > 0){
+	if (!tx_is_on && (cw_bytes_available || cw_key_state || (symbol_next && *symbol_next)) > 0){
 		tx_on(TX_SOFT);
 		millis_now = millis();
 		cw_tx_until = get_cw_delay() + millis_now;
@@ -778,42 +1297,5 @@ void cw_poll(int bytes_available, int tx_is_on){
 
 void cw_abort(){
 	//flush all the tx text buffer
+  //actually does nothing
 }
-
-/*
-//we play with n-bins, and frequency distances between the bins
-int main(int argc, char  **argv){
-	int testData[10000];
-	int n_bins;
-	int sampling_freq = 12000;
-
-	if (argc != 5){
-		puts("cmd [filename] [n_bins] [freq] [wpm]");
-		exit(-1);
-	}
-	
-	n_bins = atoi(argv[2]);
-	int freq = atoi(argv[3]);
-	int wpm = atoi(argv[4]);
-
-	cw_init(&decoder, sampling_freq, n_bins, freq, wpm); 
-
-	FILE *pf = fopen(argv[1], "r");
-	pfout = fopen("mag.raw", "w");
-	int block_count = 0;
-	while(1){
-	  for (int index = 0; index < decoder.n_bins; index++) {
-			int16_t s;
-			if(fread(&s, 1, 2, pf) <= 0){
-				//puts("File error");
-				fclose(pfout);
-				fclose(pf);
-				exit(0);
-			}
-    	testData[index] = s;
-  	}
-		cw_process(&decoder, testData);
-	}
-	fclose(pf);
-}
-*/

@@ -375,11 +375,20 @@ static int fldigi_tx_stop(){
 		return -1;
 }
 
-void modem_set_pitch(int pitch){
-	char response[1000];
-
-	fldigi_call_i("modem.set_carrier", pitch, response);
-//		puts("fldigi modem.set_carrier error");
+void modem_set_pitch(int pitch, int mode){
+	
+	//Sends an xmlrpc command to fldigi, so be selective of which modes we actually use it on - n1qm
+	switch (mode) {
+		case MODE_CW:
+		case MODE_CWR:
+		case MODE_FT8:
+		case MODE_PSK31:
+		case MODE_RTTY: {
+			char response[1000];
+			fldigi_call_i("modem.set_carrier", pitch, response);
+			break;
+		}
+	}
 }
 
 
@@ -390,13 +399,22 @@ void modem_rx(int mode, int32_t *samples, int count){
 	FILE *pf;
 	char buff[10000];
 
-	if (get_pitch() != last_pitch && (mode == MODE_CW || mode == MODE_CWR))
-		modem_set_pitch(get_pitch());
+	if (get_pitch() != last_pitch  
+		&& (mode == MODE_CW || mode == MODE_CWR || mode == MODE_RTTY || mode == MODE_PSK31))
+		modem_set_pitch(get_pitch(),mode);
 
 	s = samples;
 	switch(mode){
 	case MODE_FT8:
 		ft8_rx(samples, count);
+		break;
+	case MODE_RTTY:
+		fldigi_set_mode("RTTY");
+		fldigi_read();
+		break;
+	case MODE_PSK31:
+		fldigi_set_mode("BPSK31");
+		fldigi_read();
 		break;
 	case MODE_CW:
 	case MODE_CWR:
@@ -434,7 +452,6 @@ void modem_poll(int mode){
 
 	if (current_mode != mode){
 		//flush out the past decodes
-		//printf("modem_poll set to %d\n", mode);
 		current_mode = mode;
 		int l;
 		do{
@@ -447,9 +464,10 @@ void modem_poll(int mode){
 
 		if (current_mode == MODE_FT8)
 			macro_load("FT8", NULL);
-		else if (current_mode == MODE_CWR || current_mode == MODE_CW){
+		else if (current_mode == MODE_RTTY || current_mode == MODE_PSK31 || current_mode == MODE_CWR || current_mode == MODE_CW)
+		{
 			macro_load("CW1", NULL);	
-			modem_set_pitch(get_pitch());
+			modem_set_pitch(get_pitch(),current_mode);
 		}
 
 		if (current_mode == MODE_CW || current_mode == MODE_CWR)
@@ -465,6 +483,30 @@ void modem_poll(int mode){
 	case MODE_CWR:	
 		cw_poll(bytes_available, tx_is_on);
 	break;
+
+	case MODE_RTTY:
+	case MODE_PSK31:
+		fldigi_call("main.get_trx_state", "", buffer);
+		//we will let the keyboard decide this
+		if (tx_is_on && !fldigi_in_tx){
+			if (!fldigi_call("main.tx", "", buffer)){
+				fldigi_in_tx = 1;	
+				sound_input(1);
+			}
+			else
+				puts("*fldigi tx failed");
+		}	
+		//switch to rx if the sbitx is set to manual or the fldigi has gone back to rx 
+		else if ((tx_is_on && !strcmp(buffer, "RX")) || (!tx_is_on && fldigi_in_tx)){
+			if (fldigi_tx_stop() == -1)
+				puts("*fldigi rx failed");
+		}
+		if (tx_is_on && bytes_available > 0)
+			fldigi_tx_more_data();	
+		else 
+			fldigi_read();		
+
+	break; 
 	}
 }
 
@@ -496,6 +538,10 @@ void modem_abort(){
 	switch(current_mode){
 	case MODE_FT8:
 		ft8_abort();
+		break;
+	case MODE_RTTY:
+	case MODE_PSK31:
+		fldigi_tx_stop();
 		break;
 	case MODE_CW:
 	case MODE_CWR:

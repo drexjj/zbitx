@@ -5,8 +5,14 @@
 F=$@
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 date
-cd /home/pi/sbitx
-git remote set-url origin https://github.com/drexjj/zbitx.git
+cd $HOME/sbitx
+git stash --include-untracked
 git pull
+cd $HOME/sbitx/src/ft8_lib
+make
+sudo make install
+cd $HOME/sbitx
 ./build sbitx
 echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+
+echo "sbitx has been installed successfully. You can now close this window."

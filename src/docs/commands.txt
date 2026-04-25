@@ -31,6 +31,32 @@ These are text commands that can be entered from the keyboard
 \txpitch [in Hz]
 	Sets the tone of transmit tone of the CW. 
 	Ex: \txpitch 700
+\bfo [offset in HZ]
+    Allows adjustment of BFO during runtime; pass a value in +/- HZ
+	Passing a value of 0 will reset to default/no offset
+	An offset of +/- 3000 is usually enough to move birdies out of the passband
+	Value is saved and restored on launch
+\macro [list\<name of macro to load>]
+\bs [ + | - | [0-9] ]
+	Allows adjusting the band power scale (from hw_settings.ini) to fine tune output 
+	power without having to restart the app, settings are not saved, but makes the
+	process simpler
+	[0-9]:	Choose the band to edit the scale of.  Where 0=80m, 1=60m, 2=40m, 3=30m,
+			 4=20m, 5=17m, 6=15m, 7=12m, 8=10m.  The frequency start value and current
+			 scale will be printed in the terminal.  I.e. To edit 80m use \bs 0
+	+:	Increase the selected band's scale value by .00025
+	-:  Decrease the selected band's scale value by .00025
+		When increasing or decreasing the scale, the new value will be printed
+		in the terminal.  Make note of values for updating your hw_settings.ini.
+\bstackposopt [ON | OFF]
+	Enables or disables the bandstack indicators below the band buttons
+\epttopt [ON |OFF]
+	Displays the ePTT toggle button in the menu
+	You must have the QRO accessory board installed from ducerf.etsy.com to use this effectively
+\smeteropt [ON | OFF]
+	Shows or hides the relative S-Meter
+\ina260opt [ON | OFF]
+	Enables or disables the input source voltage and amperage display on the title box
 10M	
 12M
 15M
@@ -50,7 +76,7 @@ SPAN 25K/10K/6K/2.5K
 RIT ON/OFF
 VFO A/B
 BW 50-5000 (Hz)
-MODE USB/LSB/CW/CWR/FT8/DIGITAL/2TONE
+MODE USB/LSB/CW/CWR/FT8/DIGI/2TONE
 
 Logger Controls
 CALL [text]

@@ -1,5 +1,5 @@
-# * my callsing
-# ! other station's call sign
+# * my callsign
+# ! other station's callsign
 # @ current receive freq
 # # serial number for this QSO
 # {SENTRST}
@@ -7,7 +7,7 @@
 F1 CQ,CQ * {GRIDSQUARE}
 F2 Call,! * {GRIDSQUARE}
 F3 Reply,! * {SENTRST} 
-F4 RRply,! * R{SENTRST} 
+F4 RReply,! * R{SENTRST} 
 F5 73,! * 73
 F6 Call,! * {GRIDSQUARE}
 F7 RRR,! * RRR

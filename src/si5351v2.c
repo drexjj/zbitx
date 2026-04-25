@@ -42,7 +42,7 @@
 
 #define PLL_N 35
 #define PLLFREQ (xtal_freq_calibrated * PLL_N)
-//int xtal_freq_calibrated = 25000930; // crystal oscillator 
+//int xtal_freq_calibrated = 25012725; // crystal oscillator 
 int xtal_freq_calibrated = 25000000; // tcxo
 
 uint32_t plla_freq, pllb_freq;
@@ -225,7 +225,6 @@ static void set_freq_fixeddiv(int clk, int pll, uint32_t frequency, int divider,
 void si5351bx_setfreq(uint8_t clk, uint32_t frequency){
   int pll;
 
-	//printf("si5351: clk %d is on %d\n", clk, frequency);
   if (clk == 1)
     pll = SI_SYNTH_PLL_B;
   else
@@ -239,12 +238,6 @@ void si5351bx_setfreq(uint8_t clk, uint32_t frequency){
  
   if (pll_div & 1)
     pll_div++;
-
-	int drive_current;
-	if (clk == 1)
-		drive_current = SI5351_CLK_DRIVE_STRENGTH_2MA;
-	else
-		drive_current = SI5351_CLK_DRIVE_STRENGTH_2MA;
 
    set_freq_fixeddiv(clk, pll, frequency, pll_div, 
                     SI5351_CLK_DRIVE_STRENGTH_8MA);

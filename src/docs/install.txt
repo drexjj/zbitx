@@ -1,3 +1,4 @@
+
 ##Step 1: UPDATE wiringPi. 
 
 wiringPi is the arduino like library that allows you to flip digital lines on
@@ -69,12 +70,12 @@ device of the external program should be set to hw:2,0 and the sbitx will captur
 transmitting audio from hw:2,1. Again, hw:2,0 and hw:2,1 are operating as second pair.
 
 			SBITX Audio              WSJT-X Audio
-			hw:0,0 -> Speaker
-			hw:0,0 <- Mic
-			
+			hw:0,0 -> Speaker        hw:1,0 -> Mic In / Capture
+			hw:0,0 <- Mic            hw:2,1 <- Speaker / Output
+
 			hw:1,0 -> Line out ----> hw:1,1 Mic In / Capture
 			hw:2,1 <- Line In ------ hw:2,0 Speaker
-
+			
 To temporarily enable the  loopback, you have to run this command from the command line:
 
 	sudo modprobe snd-aloop enable=1,1,1 index=1,2,3

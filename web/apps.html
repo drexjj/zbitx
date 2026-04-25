@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>X-launcher</title>
+    <style>
+        body {
+            font-family: 'Fira Code', 'Courier New', monospace;
+            background-color: #1a1a1a;
+            color: #d0d0d0;
+            margin: 0;
+            padding: 1rem;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        #smoke-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            opacity: 0.5;
+        }
+        h1 {
+            color: #ffffff;
+            font-size: 1.8rem;
+            font-weight: bold;
+            margin-bottom: 1.5rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            text-shadow: 0 0 4px rgba(255, 255, 255, 0.5);
+        }
+        .app-list-wrapper {
+            width: 100%;
+            max-width: 450px;
+            margin: 0 auto;
+        }
+        .app-list {
+            background-color: rgba(42, 42, 42, 0.85);
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 0.5rem;
+            backdrop-filter: blur(3px);
+            -webkit-backdrop-filter: blur(3px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+        }
+        .ios-notice {
+            text-align: center;
+            color: #666;
+            font-size: 0.75rem;
+            padding: 0.25rem;
+            font-style: italic;
+            margin-top: 0.5rem;
+            max-width: 300px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .app-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 1rem;
+            border-bottom: 1px solid #444;
+        }
+        .app-item:last-child {
+            border-bottom: none;
+        }
+        .app-name {
+            font-family: 'Arial', sans-serif;
+            font-size: 1rem;
+            font-weight: bold;
+            margin: 0;
+            color: #d0d0d0;
+        }
+        /* Toggle Switch Styles */
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #cc0000;
+            border: 2px solid #444;
+            border-radius: 12px;
+            transition: background-color 0.4s;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 2px;
+            /* Center the knob vertically */
+            top: 50%;
+            transform: translateY(-50%);
+            background-color: #fff;
+            border-radius: 50%;
+            transition: transform 0.4s, left 0.4s;
+        }
+        input:checked + .slider {
+            background-color: #00cc00;
+            border-color: #00cc00;
+        }
+        input:checked + .slider:before {
+            left: 28px;
+            transform: translateY(-50%);
+        }
+        .toggle-switch input:disabled + .slider {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .vnc-link-container {
+            display: flex;
+            align-items: center;
+            position: relative;
+        }
+        .vnc-direct-link {
+            display: inline-flex;
+            align-items: center;
+            color: #0066cc;
+            text-decoration: none;
+            font-size: 1rem;
+            font-weight: bold;
+            padding-left: 24px;
+        }
+        .vnc-direct-link:hover {
+            color: #0088ff;
+        }
+        .launch-arrow {
+            position: absolute;
+            left: 0;
+            font-size: 18px;
+            animation: bounceArrow 1s infinite;
+            color: #0066cc;
+        }
+        @keyframes bounceArrow {
+            0%, 100% { transform: translateX(0); }
+            50% { transform: translateX(5px); }
+        }
+        .launch-text {
+            position: absolute;
+            left: 24px;
+            top: -20px;
+            font-size: 12px;
+            color: #0066cc;
+            white-space: nowrap;
+            opacity: 0;
+            transform: translateY(5px);
+            transition: opacity 0.3s, transform 0.3s;
+        }
+        .vnc-link-container:hover .launch-text {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        /* VNC Link */
+        #vnc-link {
+            margin-top: 1rem;
+            display: inline-block;
+            padding: 0.8rem 1.5rem;
+            background-color: #0066cc;
+            color: #fff;
+            text-decoration: none;
+            border: 2px solid #0066cc;
+            border-radius: 4px;
+            min-height: 44px;
+            line-height: 1.2;
+            font-family: inherit;
+            text-transform: uppercase;
+        }
+        #vnc-link:hover,
+        #vnc-link:active {
+            background-color: #0055b3;
+            border-color: #0055b3;
+        }
+        .loading-indicator {
+            padding: 1rem;
+            text-align: center;
+            color: #888;
+            font-style: italic;
+            font-size: 1rem;
+        }
+        .error-message {
+            padding: 1rem;
+            text-align: center;
+            color: #cc0000;
+            background-color: #3a1a1a;
+            border: 1px solid #cc0000;
+            border-radius: 4px;
+            margin: 1rem 0;
+            font-size: 1rem;
+        }
+        footer {
+            margin-top: 2rem;
+            padding: 1rem;
+            text-align: center;
+            color: #d0d0d0;
+            font-size: 0.9rem;
+            font-family: 'Arial', sans-serif;
+        }
+        /* Media Queries */
+        @media (max-width: 600px) {
+            h1 {
+                font-size: 1.6rem;
+            }
+            .app-name {
+                font-size: 0.9rem;
+            }
+            .app-item {
+                padding: 0.3rem 0.8rem;
+            }
+            footer {
+                font-size: 0.8rem;
+            }
+        }
+        @media (max-width: 400px) {
+            .app-list {
+                max-width: 100%;
+            }
+            .app-item {
+                flex-direction: row;
+                align-items: center;
+            }
+            .toggle-switch {
+                margin-top: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="smoke-canvas"></canvas>
+    <h1>X-launcher</h1>
+    <div id="app-containers">
+        <div class="loading-indicator">Loading applications...</div>
+    </div>
+    <footer>
+        Created by W2JON and W9JES for the sBitx transceiver
+        <div style="margin-top: 0.5rem; font-size: 0.75rem;">
+            <a href="sysinfo.html" target="_blank" style="color: #888; text-decoration: none;">System Information</a>
+        </div>
+    </footer>
+
+    <script>
+        let appList = [];
+        
+        async function loadAppList() {
+            try {
+                const response = await fetch('/app-list');
+                appList = await response.json();
+                generateAppContainers();
+                updateStatus();
+            } catch (error) {
+                console.error('Failed to load app list:', error);
+                document.getElementById('app-containers').innerHTML = 
+                    '<div class="error-message">Failed to load applications. Please refresh the page to try again.</div>';
+            }
+        }
+        
+        function generateAppContainers() {
+            const isIOS = isSafariIOS();
+            const container = document.getElementById('app-containers');
+            container.innerHTML = '';
+
+            // Create a wrapper for consistent width
+            const wrapperDiv = document.createElement('div');
+            wrapperDiv.className = 'app-list-wrapper';
+            container.appendChild(wrapperDiv);
+
+            const appListDiv = document.createElement('div');
+            appListDiv.className = 'app-list';
+
+            // Create the notice div that we'll append later
+            let noticeDiv;
+            if (isSafariIOS()) {
+                noticeDiv = document.createElement('div');
+                noticeDiv.className = 'ios-notice';
+                noticeDiv.innerHTML = 'IOS DETECTED: Due to limitations imposed by your browser, You may also need to touch the name of the application to open the session once it has started';
+            }
+            
+            appList.forEach(app => {
+                const appItem = document.createElement('div');
+                appItem.className = 'app-item';
+                appItem.setAttribute('data-app-id', app.id);
+                appItem.setAttribute('data-vnc-port', app.vncPort);
+                appItem.setAttribute('data-ws-port', app.wsPort);
+                
+                const nameContainer = document.createElement('div');
+                nameContainer.className = 'app-name';
+                
+                // Create both the text span and link container
+                const appNameSpan = document.createElement('span');
+                appNameSpan.textContent = app.name === 'Main vnc' ? 'Radio Screen' : app.name;
+                nameContainer.appendChild(appNameSpan);
+                
+                if (isSafariIOS()) {
+                    const linkContainer = document.createElement('div');
+                    linkContainer.id = `${app.id}-link-container`;
+                    linkContainer.className = 'vnc-link-container';
+                    linkContainer.style.display = 'none'; // Initially hidden
+                    nameContainer.appendChild(linkContainer);
+                }
+                
+                const toggleSwitch = document.createElement('label');
+                toggleSwitch.className = 'toggle-switch';
+                
+                const toggleInput = document.createElement('input');
+                toggleInput.type = 'checkbox';
+                toggleInput.id = `${app.id}-toggle`;
+                toggleInput.setAttribute('aria-label', `Toggle ${appNameSpan.textContent} application`);
+                toggleInput.onchange = async () => {
+                    toggleInput.disabled = true;
+                    const action = toggleInput.checked ? 'start' : 'stop';
+                    await controlApp(app.id, action, app.vncPort, app.wsPort);
+                    toggleInput.disabled = false;
+                    
+                    // Force immediate visual update for iOS
+                    if (isIOS) {
+                        const slider = toggleInput.nextElementSibling;
+                        if (slider && slider.classList.contains('slider')) {
+                            if (toggleInput.checked) {
+                                slider.style.backgroundColor = '#00cc00';
+                                slider.style.borderColor = '#00cc00';
+                            } else {
+                                slider.style.backgroundColor = '#cc0000';
+                                slider.style.borderColor = '#444';
+                            }
+                        }
+                    }
+                };
+                
+                const slider = document.createElement('span');
+                slider.className = 'slider';
+                
+                toggleSwitch.appendChild(toggleInput);
+                toggleSwitch.appendChild(slider);
+                
+                appItem.appendChild(nameContainer);
+                appItem.appendChild(toggleSwitch);
+                
+                appListDiv.appendChild(appItem);
+            });
+            
+            wrapperDiv.appendChild(appListDiv);
+
+            // Add the notice after the app list if we're on Safari/iOS
+            if (noticeDiv) {
+                container.appendChild(noticeDiv);
+            }
+        }
+        
+        function isSafariIOS() {
+            const ua = navigator.userAgent;
+            return /iPad|iPhone|iPod/.test(ua) || 
+                   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ||
+                   /Safari/.test(ua) && !/Chrome/.test(ua);
+        }
+
+        async function controlApp(app, action, vncPort, webPort) {
+            try {
+                const appName = app.replace('-', '_');
+                const script = `${action}_${appName}.sh`;
+                const response = await fetch('/execute-script', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: `script=${encodeURIComponent(script)}`
+                });
+                const result = await response.json();
+
+                if (result.status === 'success' && action === 'start') {
+                    try {
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        const currentHostname = window.location.hostname;
+                        const vncUrl = `http://${currentHostname}:${webPort}/vnc_auto.html?autoconnect=true&resize=remote&clip=1&quality=8&compression=0&password=sbitx&view_only=0&shared=1&reconnect=true&reconnect_delay=1000&retry_count=60`;
+                        
+                        if (isSafariIOS()) {
+                            // For Safari/iOS, show a direct link in the existing container
+                            const linkContainer = document.getElementById(`${app}-link-container`);
+                            const appNameSpan = linkContainer?.parentElement?.querySelector('span');
+                            if (linkContainer && appNameSpan) {
+                                appNameSpan.style.display = 'none';
+                                linkContainer.style.display = 'block';
+                                linkContainer.innerHTML = `
+                                    <span class="launch-arrow">👉</span>
+                                    <span class="launch-text">Touch Name to Launch</span>
+                                    <a href="${vncUrl}" target="_blank" class="vnc-direct-link">
+                                        ${appNameSpan.textContent}
+                                    </a>
+                                `;
+                            }
+                        } else {
+                            // For other browsers, use popup
+                            const newWindow = window.open(vncUrl, '_blank');
+                            if (!newWindow) {
+                                console.log('Popup blocked! Please allow popups for this site to use the VNC viewer.');
+                            } else {
+                                const checkWindowInterval = setInterval(() => {
+                                    if (newWindow.closed) {
+                                        clearInterval(checkWindowInterval);
+                                        console.log(`NoVNC window for ${app} was closed, stopping the application`);
+                                        controlApp(app, 'stop');
+                                    }
+                                }, 2000);
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error starting VNC connection:', error.message);
+                    }
+                } else if (action === 'stop') {
+                    // Hide link and show original app name
+                    const linkContainer = document.getElementById(`${app}-link-container`);
+                    const appNameSpan = linkContainer?.parentElement?.querySelector('span');
+                    if (linkContainer && appNameSpan) {
+                        linkContainer.style.display = 'none';
+                        appNameSpan.style.display = 'inline';
+                        // Find the app in appList to get its name
+                        const appInfo = appList.find(a => a.id === app);
+                        if (appInfo) {
+                            appNameSpan.textContent = appInfo.name === 'Main vnc' ? 'Radio Screen' : appInfo.name;
+                        }
+                    }
+                }
+
+                updateStatus();
+            } catch (error) {
+                console.error('Error:', error.message);
+                updateStatus();
+            }
+        }
+
+        async function updateStatus() {
+            try {
+                const response = await fetch('/app-status');
+                const status = await response.json();
+
+                appList.forEach(app => {
+                    // Skip status updates for "Main vnc" (now "Radio Screen")
+                    if (app.name === 'Main vnc') {
+                        return;
+                    }
+                    const toggleInput = document.getElementById(`${app.id}-toggle`);
+                    if (toggleInput) {
+                        const isRunning = status[app.id] === true;
+                        toggleInput.checked = isRunning;
+                        // Force UI update for iOS devices
+                        if (isSafariIOS()) {
+                            const slider = toggleInput.nextElementSibling;
+                            if (slider && slider.classList.contains('slider')) {
+                                if (isRunning) {
+                                    slider.style.backgroundColor = '#00cc00';
+                                    slider.style.borderColor = '#00cc00';
+                                } else {
+                                    slider.style.backgroundColor = '#cc0000';
+                                    slider.style.borderColor = '#444';
+                                }
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Status update failed:', error);
+            }
+        }
+
+        setInterval(updateStatus, 6000);
+        document.addEventListener('DOMContentLoaded', () => {
+            loadAppList();
+            initSmokeEffect();
+        });
+        
+        // Smoke effect implementation
+        function initSmokeEffect() {
+            const canvas = document.getElementById('smoke-canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            
+            const particles = [];
+            const particleCount = 50;
+            
+            // Create particles
+            for (let i = 0; i < particleCount; i++) {
+                particles.push({
+                    x: Math.random() * canvas.width,
+                    y: canvas.height + Math.random() * 100,
+                    size: Math.random() * 15 + 10,
+                    speed: Math.random() * 1.5 + 0.5,
+                    opacity: Math.random() * 0.4 + 0.1,
+                    color: Math.random() > 0.5 ? '#3366cc' : '#336699',
+                    rotation: Math.random() * Math.PI * 2
+                });
+            }
+            
+            function animate() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // Update and draw particles
+                for (let i = 0; i < particles.length; i++) {
+                    const p = particles[i];
+                    
+                    // Move particles upward
+                    p.y -= p.speed;
+                    p.x += Math.sin(p.y * 0.01) * 0.5;
+                    p.rotation += 0.005;
+                    
+                    // Reset particles that go off screen
+                    if (p.y < -50) {
+                        p.y = canvas.height + Math.random() * 50;
+                        p.x = Math.random() * canvas.width;
+                    }
+                    
+                    // Draw number 5 as particle
+                    ctx.save();
+                    ctx.translate(p.x, p.y);
+                    ctx.rotate(p.rotation);
+                    ctx.font = `${p.size}px Arial`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillStyle = p.color;
+                    ctx.globalAlpha = p.opacity;
+                    ctx.fillText('5', 0, 0);
+                    ctx.restore();
+                }
+                
+                requestAnimationFrame(animate);
+            }
+            
+            // Handle window resize
+            window.addEventListener('resize', () => {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            });
+            
+            animate();
+        }
+    </script>
+</body>
+</html>

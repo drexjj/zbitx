@@ -77,7 +77,7 @@ int q_length(struct Queue *p);
 int32_t q_read(struct Queue *p);
 int q_write(struct Queue *p, int w);
 void q_empty(struct Queue *p);
-
+#define SAMPLE_RATE 48000
 #define MAX_BINS 2048
 
 /*
@@ -128,8 +128,9 @@ struct filter *filter_new(int input_length, int impulse_length);
 int filter_tune(struct filter *f, float const low,float const high,float const kaiser_beta);
 int make_hann_window(float *window, int max_count);
 void filter_print(struct filter *f);
-
-
+long set_bfo_offset(int offset,long freq);
+void resetup_oscillators();
+int get_bfo_offset();
 // Complex norm (sum of squares of real and imaginary parts)
 static inline float const cnrmf(const complex float x){
   return crealf(x)*crealf(x) + cimagf(x) * cimagf(x);
@@ -149,10 +150,11 @@ static inline double const cnrm(const complex double x){
 #define MODE_NBFM 4 
 #define MODE_AM 5 
 #define MODE_FT8 6  
-#define MODE_DIGITAL 7 
-#define MODE_2TONE 8 
-#define MODE_TUNE 9
-#define MODE_CALIBRATE 10 
+#define MODE_PSK31 7 
+#define MODE_RTTY 8 
+#define MODE_DIGITAL 9 
+#define MODE_2TONE 10 
+#define MODE_CALIBRATE 11 
 
 struct rx {
 	long tuned_bin;					//tuned bin (this should translate to freq) 
@@ -196,7 +198,7 @@ void sdr_modulation_update(int32_t *samples, int count, double scale_up);
 
 /* from modems.c */
 void modem_rx(int mode, int32_t *samples, int count);
-void	modem_set_pitch(int pitch);
+void modem_set_pitch(int pitch, int mode);
 void modem_init();
 int get_tx_data_byte(char *c);
 int	get_tx_data_length();
@@ -212,6 +214,9 @@ int is_in_tx();
 void tx_on(int trigger);
 void tx_off();
 long get_freq();
+int get_passband_bw();
+void hamlib_tx(int tx_on);
+int get_default_passband_bw();
 int get_pitch();
 time_t time_sbitx();
 
@@ -223,13 +228,17 @@ time_t time_sbitx();
 #define CW_DASH_DELAY (8) 
 #define CW_WORD_DELAY (16) 
 #define CW_DOWN (32) 
+#define CW_SQUEEZE (64)
+
 
 //straight key, iambic, keyboard
 #define CW_STRAIGHT 0
-#define CW_IAMBIC	1
+#define CW_IAMBIC 1
 #define CW_IAMBICB 2	
 #define CW_KBD 3
-
+//#define CW_SIDESWIPE 4 // not supported in keyer
+#define CW_ULTIMATIC 5
+#define CW_BUG 6
 
 int key_poll();
 int key_poll2();
@@ -255,5 +264,12 @@ FILE *wav_start_writing(const char* path);
 #define MULTICAST_PORT 5005
 #define MULTICAST_MAX_BUFFER_SIZE 1024
 
-//a bit of logging support for debugging
-#define LOG_FILE printf("Log %s:%d\n", __FILE__, __LINE__);
+// S-Meter
+int get_rx_gain(void);
+
+//Loopback play reset
+void sound_reset(int force);
+
+// Zero beat detection 
+extern int calculate_zero_beat(struct rx *r, double sampling_rate);
+extern int zero_beat_min_magnitude;

@@ -8,6 +8,15 @@ create table messages (
 	data TEXT DEFAULT ""
 );
 
+create table contacts(
+	id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+	callsign TEXT,
+	name TEXT,
+	last_seen_on INTEGER,
+	status TEXT
+);
+
+
 create table logbook (
 	id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
 	mode TEXT,

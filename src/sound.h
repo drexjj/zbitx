@@ -22,8 +22,36 @@ void sound_process(
 	int32_t *input_rx, int32_t *input_mic, 
 	int32_t *output_speaker, int32_t *output_tx, 
 	int n_samples);
-void	sound_thread_stop();
+void sound_thread_stop();
 void sound_volume(char *card_name, char *element, int volume);
 void sound_mixer(char *card_name, char *element, int make_on);
 void sound_input(int loop);
-unsigned long sbitx_millis(); //polled at every sound_process block
+unsigned long sbitx_millis();
+
+//volume control normalizer
+extern int input_volume;
+//void set_input_volume(int volume);
+int get_input_volume(void);
+void check_r1_volume();
+
+
+//Notch Filter
+extern int notch_enabled;
+extern double notch_freq; 
+extern double notch_bandwidth; 
+
+//ANR (automatic noise reduction)
+extern int anr_enabled;
+
+//rx DSP tool
+extern int dsp_enabled;
+extern int noise_threshold;
+extern int noise_update_interval; 
+double scaleNoiseThreshold(int control);
+
+// Aduio Compression tool
+extern int compression_control_level;
+void apply_fixed_compression(float *input, int num_samples, int compression_control_value);
+
+// TX Monitor tool
+extern int txmon_control_level;
