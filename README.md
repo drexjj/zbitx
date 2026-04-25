@@ -45,6 +45,10 @@ cd $HOME && cp -r sbitx_orig/web/*.mc sbitx/web/ && cp -r sbitx_orig/data/* sbit
 
 For detailed installation and upgrade instructions, please visit the [Wiki Page](https://github.com/drexjj/zbitx/wiki/) which will be created in the future.
 
+```console
+cd $HOME && git clone https://github.com/drexjj/zbitx && mv zbitx sbitx
+```
+
 ## 📥 Download the 32-Bit Image
 
 A preconfigured, downloadable Raspberry Pi Zero 2W image file will be available soon. This image is designed for a **32GB SD card or USB drive** and can be installed using **Balena Etcher** or **Raspberry Pi Imager**.
