@@ -1,4 +1,4 @@
-# zBitx - 64-Bit Version
+# zBitx - 32-Bit Version
 ![sBitx image](sbv50.png)
 
 
