@@ -6807,7 +6807,7 @@ static void zbitx_logs(){
 
 	printf("Sending the last 50 log entries to zbitx\n");	
 	query[0] = 0;
-	row_id = -1;
+	row_id = 0;
 	logbook_query(NULL, row_id, logbook_path);
 	FILE *pf = fopen(logbook_path, "r");
 	if (!pf)
