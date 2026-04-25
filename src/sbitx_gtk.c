@@ -3045,6 +3045,16 @@ if (!strcmp(field_str("SMETEROPT"), "ON") &&
 		// Pass the rx_gain along with the rx pointer
 		s_meter_value = calculate_s_meter(current_rx, rx_gain);
 
+		// Send the raw s_meter_value to the Pico front panel.
+		// smeter_draw() on the Pico divides by 200 to get a 0-6 bar index.
+		// Sent explicitly like IN_TX because the GTK s-meter is drawn directly
+		// with Cairo and never stored in a layout field that zbitx_poll() would pick up.
+		if (zbitx_available) {
+			char smeter_buff[30];
+			sprintf(smeter_buff, "SMETER %d}", s_meter_value);
+			i2cbb_write_i2c_block_data(0x0a, '{', strlen(smeter_buff), smeter_buff);
+		}
+
 		// Lets separate the S-meter value into s-units and additional dB
 		int s_units = s_meter_value / 100;
 		int additional_db = s_meter_value % 100;
