@@ -7,7 +7,7 @@ echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 date
 cd $HOME/sbitx
 git stash --include-untracked
-git remote set-url origin https://github.com/afarhan/zbitxv2.git
+git remote set-url origin https://github.com/drexjj/zbitx.git
 git pull
 git checkout main
 cd $HOME/sbitx/src/ft8_lib
@@ -17,4 +17,4 @@ cd $HOME/sbitx
 ./build sbitx
 echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
 
-echo "sbitx has been installed successfully. You can now close this window."
+echo "zbitx has been installed successfully. You can now close this window."
