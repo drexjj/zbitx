@@ -2221,7 +2221,7 @@ void tr_switch_v4(int tx_on) {
   if (tx_on) {                   // switch to transmit
 		digitalWrite(RX_LINE, LOW);
 
-		//first turn off the LPFs, so PA doesnt connect 
+		//first turn off the LPFs, so PA doesnt connect during switching
  		digitalWrite(LPF_A, LOW);
  		digitalWrite(LPF_B, LOW);
  		digitalWrite(LPF_C, LOW);
@@ -2243,6 +2243,9 @@ void tr_switch_v4(int tx_on) {
 				digitalWrite(EXT_PTT, HIGH);
 				delay(20); //this delay gives time for ext device to settle before tx
 			}
+		prev_lpf = -1;               // force LPF to be re-selected
+		set_lpf_40mhz(freq_hdr);     // engage the correct LPF for the current band
+		delay(10);                   // debounce: let LPF relay settle before keying PA
     digitalWrite(TX_LINE, HIGH);  // power up PA and disconnect receiver
     spectrum_reset();
 
@@ -2253,20 +2256,19 @@ void tr_switch_v4(int tx_on) {
 
   } else {                       // switch to receive
     in_tx = 0;                   // lower the transmit flag
-		digitalWrite(TX_LINE, LOW);
+		digitalWrite(TX_LINE, LOW);  // power down PA
     sound_mixer(audio_card, "Master", 0);  // mute audio while switching to receive
     sound_mixer(audio_card, "Capture", 0);
     fft_reset_m_bins();
     mute_count = MUTE_MAX;
 		digitalWrite(LPF_A, LOW);
 		digitalWrite(LPF_B, LOW);
- 	 	digitalWrite(LPF_C, LOW);
- 	 	digitalWrite(LPF_D, LOW);
- 	 	digitalWrite(LPF_E, LOW);
+	 	digitalWrite(LPF_C, LOW);
+	 	digitalWrite(LPF_D, LOW);
+	 	digitalWrite(LPF_E, LOW);
+		prev_lpf = -1;               // force LPF to be re-selected on next RX tune
     digitalWrite(EXT_PTT, LOW);  // added by KF7YDU - shuts down ext_ptt
     delay(5);
-    digitalWrite(TX_LINE, LOW);  // use T/R switch to connect rcvr
-    //digitalWrite(RX_LINE, HIGH);
     check_r1_volume();           // audio codec is back on
     initialize_rx_vol();         // added to set volume after tx -W2JON W9JES KB2ML
     sound_mixer(audio_card, "Master", rx_vol);
@@ -2285,6 +2287,11 @@ void tr_switch_v4(int tx_on) {
 // transmit-receive switch for both sbitx DE and V2 and V3
 void tr_switch_v2(int tx_on) {
   if (tx_on) {                   // switch to transmit
+	//first turn off the LPFs so the PA doesn't connect during switching
+	digitalWrite(LPF_A, LOW);
+	digitalWrite(LPF_B, LOW);
+	digitalWrite(LPF_C, LOW);
+	digitalWrite(LPF_D, LOW);
 	//digitalWrite(RX_LINE, LOW);
     in_tx = 1;                   // raise a flag so functions see we are in transmit mode
     sound_mixer(audio_card, "Master", 0);  // mute audio while switching to transmit
@@ -2301,6 +2308,9 @@ void tr_switch_v2(int tx_on) {
 				digitalWrite(EXT_PTT, HIGH);
 				delay(20); //this delay gives time for ext device to settle before tx
 			}
+	prev_lpf = -1;               // force LPF to be re-selected
+	set_lpf_40mhz(freq_hdr);     // engage the correct LPF for the current band
+	delay(10);                   // debounce: let LPF relay settle before keying PA
     digitalWrite(TX_LINE, HIGH);  // power up PA and disconnect receiver
     spectrum_reset();
 
@@ -2315,6 +2325,12 @@ void tr_switch_v2(int tx_on) {
     sound_mixer(audio_card, "Capture", 0);
     fft_reset_m_bins();
     mute_count = MUTE_MAX;
+	// blank all LPFs to isolate PA during relay transition
+	digitalWrite(LPF_A, LOW);
+	digitalWrite(LPF_B, LOW);
+	digitalWrite(LPF_C, LOW);
+	digitalWrite(LPF_D, LOW);
+	prev_lpf = -1;               // force LPF to be re-selected
     digitalWrite(EXT_PTT, LOW);  // added by KF7YDU - shuts down ext_ptt
     delay(5);
     digitalWrite(TX_LINE, LOW);  // use T/R switch to connect rcvr
@@ -2324,6 +2340,7 @@ void tr_switch_v2(int tx_on) {
     sound_mixer(audio_card, "Master", rx_vol);
     sound_mixer(audio_card, "Capture", rx_gain);
     spectrum_reset();
+	set_lpf_40mhz(freq_hdr);     // re-engage the LPF for the current band
 
     // Also reset the hold counter for showing the output power
     fwdpower_cnt = 0;
@@ -2365,10 +2382,12 @@ void setup()
 	pinMode(LPF_B, OUTPUT);
 	pinMode(LPF_C, OUTPUT);
 	pinMode(LPF_D, OUTPUT);
+	pinMode(LPF_E, OUTPUT);
 	digitalWrite(LPF_A, LOW);
 	digitalWrite(LPF_B, LOW);
 	digitalWrite(LPF_C, LOW);
 	digitalWrite(LPF_D, LOW);
+	digitalWrite(LPF_E, LOW);
 
 	// ADDED BY KF7YDU - initialize ext_ptt to low at startup
 	digitalWrite(EXT_PTT, LOW);
