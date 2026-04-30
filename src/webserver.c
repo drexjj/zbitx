@@ -601,9 +601,9 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
     }
     // Check for HTTP->HTTPS redirect *before* other handling
     if (redirect_http_to_https && !c->is_tls) {
-      // Construct the target URL: https://zbitx.local:8443 + original URI
+      // Construct the target URL: https://sbitx.local:8443 + original URI
       char https_url[2048];
-      snprintf(https_url, sizeof(https_url), "https://zbitx.local:8443%.*s", 
+      snprintf(https_url, sizeof(https_url), "https://sbitx.local:8443%.*s", 
                (int)hm->uri.len, hm->uri.buf);
       
       // Construct the Location header string, including Content-Length: 0
