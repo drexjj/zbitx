@@ -4,6 +4,9 @@
 
 An improved version of the zBitx application designed for the zBitx hardware. This version is designed for the 32-bit Raspberry Pi image, which will be availabled at [here](https://github.com/drexjj/zbitx/releases) inthe future.
 
+### Please note that CW is not fully working on this BETA build. We are trying to identify the root cause.
+
+
 ## 🚀 Core Development Team
 
 We have an incredible development team collaborating on improvements for the sBitx platform:
