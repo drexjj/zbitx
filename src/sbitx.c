@@ -2243,8 +2243,8 @@ void tr_switch_v4(int tx_on) {
 				digitalWrite(EXT_PTT, HIGH);
 				delay(20); //this delay gives time for ext device to settle before tx
 			}
-		prev_lpf = -1;               // force LPF to be re-selected
-		set_lpf_40mhz(freq_hdr);     // engage the correct LPF for the current band
+		//prev_lpf = -1;               // force LPF to be re-selected
+		//set_lpf_40mhz(freq_hdr);     // engage the correct LPF for the current band
 		delay(10);                   // debounce: let LPF relay settle before keying PA
     digitalWrite(TX_LINE, HIGH);  // power up PA and disconnect receiver
     spectrum_reset();
