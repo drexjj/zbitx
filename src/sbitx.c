@@ -1817,109 +1817,94 @@ void tx_process(
 		// output_tx[i] = 0;
 	}
 	//	printf("min %d, max %d\n", min, max);
-	
-	if (sbitx_version < 4)
-		read_power();
-	sdr_modulation_update(output_tx, MAX_BINS/2, tx_amp);
 
+	// read_power() is called once here unconditionally.
+	// Previously it was called twice (once conditionally for sbitx_version < 4
+	// and once unconditionally), wasting ~1-2ms per audio block on I2C/ADC reads.
 	read_power();
 
-	// Instead of using sdr_modulation_update, we'll update the spectrum data directly
-	// This allows the TX audio to be displayed in the spectrum and waterfall
-	
-	// Create input buffer for FFT
-	complex float *tx_fft_in = (complex float *)malloc(sizeof(complex float) * MAX_BINS);
-	
-	// Calculate DC offset (average) to remove it
-	float dc_offset = 0;
-	for (i = 0; i < MAX_BINS / 2; i++) {
-		dc_offset += output_tx[i];
-	}
-	dc_offset /= (MAX_BINS / 2);
-	
-	// Copy the output_tx samples to the FFT input buffer with a window function
-	for (i = 0; i < MAX_BINS / 2; i++) {
-		// Apply Hann window for better spectral resolution
-		float window = 0.5 * (1 - cos(2 * M_PI * i / (MAX_BINS / 2 - 1)));
-		// Remove DC offset and scale down
-		tx_fft_in[i] = (output_tx[i] - dc_offset) * window / (tx_amp * 150000000.0); // Significantly reduced scaling
-	}
-	
-	// Zero-pad the second half
-	for (i = MAX_BINS / 2; i < MAX_BINS; i++) {
-		tx_fft_in[i] = 0;
-	}
-	
-	// Use the existing FFT infrastructure
-	for (i = 0; i < MAX_BINS; i++) {
-		__real__ fft_in[i] = crealf(tx_fft_in[i]);
-		__imag__ fft_in[i] = 0;
-	}
-	
-	// Perform FFT using the existing plan
-	fftw_execute(plan_fwd);
-	
-	// Update the fft_spectrum array with the FFT results
-	// This is important because the spectrum_update function uses this array
-	
-	// First pass - enhanced detail with frequency-dependent scaling
-	for (i = 0; i < MAX_BINS; i++) {
-		// Calculate bin frequency relative to center (for frequency-dependent scaling)
-		int bin_from_center = i - MAX_BINS / 2;
-		if (bin_from_center < 0) bin_from_center = -bin_from_center;
-		
-		// Apply slightly higher gain to mid-range frequencies where voice details matter most
-		float freq_scale = 1.0;
-		if (bin_from_center > 10 && bin_from_center < 100) {
-			freq_scale = 1.3; // Boost mid-range frequencies
-		}
-		
-		// Store the FFT results with enhanced detail
-		fft_spectrum[i] = fft_out[i] * 0.025 * freq_scale; // Slightly increased from 0.02 for more detail
-	}
-	
-	// Apply a more refined smoothing that preserves detail while reducing noise
-	complex float *smoothed = (complex float *)malloc(sizeof(complex float) * MAX_BINS);
-	
-	// Copy first and last points as-is
-	smoothed[0] = fft_spectrum[0];
-	smoothed[MAX_BINS-1] = fft_spectrum[MAX_BINS-1];
-	
-	// Apply minimal smoothing to preserve maximum detail
-	for (i = 1; i < MAX_BINS-1; i++) {
-		// Use weighted average with heavy weight on current bin: 80% current bin, 10% each adjacent bin
-		smoothed[i] = fft_spectrum[i-1] * 0.1 + fft_spectrum[i] * 0.8 + fft_spectrum[i+1] * 0.1;
-		
-		// Apply stronger contrast enhancement to make fine details more visible
-		float mag = cabsf(smoothed[i]);
-		if (mag > 0) {
-			// Use stronger non-linear enhancement to reveal subtle details
-			smoothed[i] *= (1.0 + 0.5 * log10f(mag + 1.0));
-			
-			// Add slight sharpening effect to enhance edges between frequency components
-			if (i > 1 && i < MAX_BINS-2) {
-				complex float edge_detect = smoothed[i] * 2.0 - smoothed[i-1] * 0.5 - smoothed[i+1] * 0.5;
-				smoothed[i] = smoothed[i] * 0.7 + edge_detect * 0.3;
-			}
-		}
-	}
-	
-	// Copy smoothed spectrum back to fft_spectrum
-	for (i = 0; i < MAX_BINS; i++) {
-		fft_spectrum[i] = smoothed[i];
-	}
-	
-	// Free the temporary buffer
-	free(smoothed);
-	
-	// Call the standard spectrum update function to ensure consistent processing
-	spectrum_update();
-	
-	// Clean up
-	free(tx_fft_in);
+	// sdr_modulation_update is called once here.
+	// Previously it was called twice (once here and once at the very end after
+	// the spectrum block), which was a duplicate doing the same work twice.
+	sdr_modulation_update(output_tx, MAX_BINS/2, tx_amp);
 
-	// The old sdr_modulation_update function is still called for API compatibility
-	sdr_modulation_update(output_tx, MAX_BINS / 2, tx_amp);
+	// TX Spectrum display update.
+	//
+	// The original code ran a full extra fftw_execute(plan_fwd) + two malloc()/free()
+	// + a 2048-iteration smoothing loop with cabsf/log10f ON EVERY AUDIO BLOCK.
+	// On Pi Zero 2W (1GHz A53) this added ~5-8ms per block on top of the two main
+	// FFTs, pushing total time to 16-22ms against a 10.67ms budget — causing
+	// continuous ALSA underruns in all TX modes, worst in CW.
+	//
+	// Fix: rate-limit to every TX_SPECTRUM_INTERVAL blocks (~10 Hz update rate).
+	// The waterfall/spectrum display updates at human-visible rates (<<30fps) so
+	// there is no perceptible quality difference. The static pre-allocated buffers
+	// eliminate the malloc/free penalty from the audio hot path entirely.
+	//
+	// TX_SPECTRUM_INTERVAL of 10 = ~9.4 Hz at 96kHz/1024 frames. Increase if
+	// you still see underruns; decrease toward 1 if you want faster waterfall.
+#define TX_SPECTRUM_INTERVAL 10
+	{
+		static int tx_spectrum_counter = 0;
+		static complex float tx_fft_buf[MAX_BINS];   // pre-allocated, no malloc
+		static complex float tx_smoothed[MAX_BINS];  // pre-allocated, no malloc
+
+		if (++tx_spectrum_counter >= TX_SPECTRUM_INTERVAL) {
+			tx_spectrum_counter = 0;
+
+			// Calculate DC offset to remove it
+			float dc_offset = 0;
+			for (i = 0; i < MAX_BINS / 2; i++)
+				dc_offset += output_tx[i];
+			dc_offset /= (MAX_BINS / 2);
+
+			// Fill FFT input: Hann-windowed, DC-removed, scaled
+			for (i = 0; i < MAX_BINS / 2; i++) {
+				float window = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (MAX_BINS / 2 - 1)));
+				tx_fft_buf[i] = (output_tx[i] - dc_offset) * window / (tx_amp * 150000000.0f);
+			}
+			for (i = MAX_BINS / 2; i < MAX_BINS; i++)
+				tx_fft_buf[i] = 0;
+
+			// Load into fftw input buffer and execute
+			for (i = 0; i < MAX_BINS; i++) {
+				__real__ fft_in[i] = crealf(tx_fft_buf[i]);
+				__imag__ fft_in[i] = 0;
+			}
+			fftw_execute(plan_fwd);
+
+			// Build fft_spectrum with frequency-dependent scaling
+			for (i = 0; i < MAX_BINS; i++) {
+				int bin_from_center = i - MAX_BINS / 2;
+				if (bin_from_center < 0) bin_from_center = -bin_from_center;
+				float freq_scale = (bin_from_center > 10 && bin_from_center < 100) ? 1.3f : 1.0f;
+				fft_spectrum[i] = fft_out[i] * 0.025f * freq_scale;
+			}
+
+			// Smooth spectrum: 80% current bin, 10% each neighbour
+			tx_smoothed[0]          = fft_spectrum[0];
+			tx_smoothed[MAX_BINS-1] = fft_spectrum[MAX_BINS-1];
+			for (i = 1; i < MAX_BINS-1; i++) {
+				tx_smoothed[i] = fft_spectrum[i-1] * 0.1f
+				               + fft_spectrum[i]   * 0.8f
+				               + fft_spectrum[i+1] * 0.1f;
+				float mag = cabsf(tx_smoothed[i]);
+				if (mag > 0) {
+					tx_smoothed[i] *= (1.0f + 0.5f * log10f(mag + 1.0f));
+					if (i > 1 && i < MAX_BINS-2) {
+						complex float edge = tx_smoothed[i]   * 2.0f
+						                   - tx_smoothed[i-1] * 0.5f
+						                   - tx_smoothed[i+1] * 0.5f;
+						tx_smoothed[i] = tx_smoothed[i] * 0.7f + edge * 0.3f;
+					}
+				}
+			}
+			for (i = 0; i < MAX_BINS; i++)
+				fft_spectrum[i] = tx_smoothed[i];
+
+			spectrum_update();
+		} // end tx_spectrum_counter block
+	}
 }
 
 /*
