@@ -94,6 +94,37 @@ static int tx_gain = 100;
 static int tx_compress = 0;
 static double spectrum_speed = 0.3;
 static int in_tx = 0;
+
+/* -----------------------------------------------------------------------
+ * Background power-read thread
+ *
+ * read_power() calls i2cbb_read_i2c_block_data() which acquires the shared
+ * I2C bus mutex. When the GTK thread holds that mutex for a si5351bx_setfreq()
+ * sequence (16 writes, triggered by CW key-down/up), the audio thread used to
+ * stall for 38-54ms waiting for the mutex — causing ALSA underruns in CW mode.
+ *
+ * Fix: run read_power() in a dedicated low-priority background thread at 10 Hz.
+ * The audio thread never touches the I2C bus directly. Power/SWR/ALC still
+ * update smoothly; 10 Hz is imperceptibly different from 93 Hz on a meter.
+ * ----------------------------------------------------------------------- */
+static pthread_t   power_poll_thread;
+static volatile int power_poll_running = 0;
+
+static void *power_poll_fn(void *arg)
+{
+    (void)arg;
+    /* Run at the lowest possible scheduling priority so the audio thread
+     * (SCHED_FIFO max) and the GTK thread can always preempt us. */
+    struct sched_param sch = { .sched_priority = 0 };
+    pthread_setschedparam(pthread_self(), SCHED_OTHER, &sch);
+
+    while (power_poll_running) {
+        usleep(100000);   /* 100 ms = 10 Hz */
+        if (in_tx)
+            read_power();
+    }
+    return NULL;
+}
 static int rx_tx_ramp = 0;
 static int sidetone = 2000000000;
 struct vfo tone_a, tone_b, am_carrier; // these are audio tone generators
@@ -1666,6 +1697,13 @@ void tx_process(
 	int m = 0;
 	int j = 0;
 
+	// --- Section timing (temporary diagnostic for Pi Zero 2W) ---
+	// Prints per-section breakdown every ~1 second so you can see which
+	// phase of tx_process() is slow. Remove once the issue is resolved.
+	struct timespec _tA, _tB, _tC, _tD;
+	clock_gettime(CLOCK_MONOTONIC, &_tA);
+	// --- end section timing preamble ---
+
 	// double max = -10.0, min = 10.0;
 	// gather the samples into a time domain array
 	for (i = MAX_BINS / 2; i < MAX_BINS; i++)
@@ -1745,6 +1783,7 @@ void tx_process(
 		q_write(&qremote, output_speaker[i]);
 	}
 
+	clock_gettime(CLOCK_MONOTONIC, &_tB);  // after sample generation
 	// convert to frequency
 	fftw_execute(plan_fwd);
 
@@ -1801,6 +1840,7 @@ void tx_process(
 	// the spectrum display is updated
 	// spectrum_update();
 
+	clock_gettime(CLOCK_MONOTONIC, &_tC);  // after fwd FFT + filter + rotate
 	// convert back to time domain
 	fftw_execute(r->plan_rev);
 	int min = 10000000;
@@ -1817,29 +1857,21 @@ void tx_process(
 		// output_tx[i] = 0;
 	}
 	//	printf("min %d, max %d\n", min, max);
-
-	// read_power() does a bit-banged I2C block read from the Pico 2040 (address 0x08)
-	// to get forward/reflected power for the SWR/ALC display. On Pi Zero 2W this
-	// takes ~1-3ms per call due to I2C bit-bang overhead and Pico clock-stretching.
-	// Called at 93 Hz (every audio block) it consumed 10-28% of the audio budget.
-	//
-	// Worse: the newly-added I2C mutex means that when the GTK thread is mid-way
-	// through a si5351bx_setfreq() sequence (16 mutex-protected I2C writes triggered
-	// by CW key-down/up transitions), read_power() blocks in the audio thread waiting
-	// for the mutex — causing the 49ms spikes in the timing log.
-	//
-	// Fix: rate-limit to TX_POWER_READ_INTERVAL blocks (~9-10 Hz). The power and
-	// SWR meters update smoothly at 10 Hz; 93 Hz was wasteful and harmful.
-	// If you want faster ALC response, lower the interval — but keep it > 3 to
-	// ensure the audio thread doesn't stall on I2C during CW key transitions.
-#define TX_POWER_READ_INTERVAL 10
+	clock_gettime(CLOCK_MONOTONIC, &_tD);  // after rev FFT + output copy
 	{
-		static int power_read_counter = 0;
-		if (++power_read_counter >= TX_POWER_READ_INTERVAL) {
-			power_read_counter = 0;
-			read_power();
+		static int _tx_section_cnt = 0;
+		if (++_tx_section_cnt >= 94) {  /* ~1 second at 96kHz/1024 frames */
+			_tx_section_cnt = 0;
+			long us_samples = (_tB.tv_sec-_tA.tv_sec)*1000000L + (_tB.tv_nsec-_tA.tv_nsec)/1000L;
+			long us_fwd_fft = (_tC.tv_sec-_tB.tv_sec)*1000000L + (_tC.tv_nsec-_tB.tv_nsec)/1000L;
+			long us_rev_fft = (_tD.tv_sec-_tC.tv_sec)*1000000L + (_tD.tv_nsec-_tC.tv_nsec)/1000L;
+			fprintf(stderr, "tx_process sections: samples=%ldus  fwd_fft+filter=%ldus  rev_fft+out=%ldus\n",
+			        us_samples, us_fwd_fft, us_rev_fft);
 		}
 	}
+
+	// read_power() is now called from power_poll_fn() background thread at 10 Hz.
+	// Removed from the audio callback entirely to eliminate I2C mutex stalls.
 
 	// sdr_modulation_update is called once here.
 	// Previously it was called twice (once here and once at the very end after
@@ -2430,6 +2462,12 @@ void setup()
 
     printf("hw version: %d\n", sbitx_version);
 	setup_audio_codec();
+
+	/* Start the background power-read thread before the audio thread so that
+	 * read_power() is never called from the audio callback path. */
+	power_poll_running = 1;
+	pthread_create(&power_poll_thread, NULL, power_poll_fn, NULL);
+
 	sound_thread_start("plughw:0,0");
 
 	sleep(1); // why? to allow the aloop to initialize?
