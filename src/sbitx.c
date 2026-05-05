@@ -110,6 +110,8 @@ static int in_tx = 0;
 static pthread_t   power_poll_thread;
 static volatile int power_poll_running = 0;
 
+void read_power(); /* forward declaration — defined later in this file */
+
 static void *power_poll_fn(void *arg)
 {
     (void)arg;
