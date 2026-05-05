@@ -1818,10 +1818,28 @@ void tx_process(
 	}
 	//	printf("min %d, max %d\n", min, max);
 
-	// read_power() is called once here unconditionally.
-	// Previously it was called twice (once conditionally for sbitx_version < 4
-	// and once unconditionally), wasting ~1-2ms per audio block on I2C/ADC reads.
-	read_power();
+	// read_power() does a bit-banged I2C block read from the Pico 2040 (address 0x08)
+	// to get forward/reflected power for the SWR/ALC display. On Pi Zero 2W this
+	// takes ~1-3ms per call due to I2C bit-bang overhead and Pico clock-stretching.
+	// Called at 93 Hz (every audio block) it consumed 10-28% of the audio budget.
+	//
+	// Worse: the newly-added I2C mutex means that when the GTK thread is mid-way
+	// through a si5351bx_setfreq() sequence (16 mutex-protected I2C writes triggered
+	// by CW key-down/up transitions), read_power() blocks in the audio thread waiting
+	// for the mutex — causing the 49ms spikes in the timing log.
+	//
+	// Fix: rate-limit to TX_POWER_READ_INTERVAL blocks (~9-10 Hz). The power and
+	// SWR meters update smoothly at 10 Hz; 93 Hz was wasteful and harmful.
+	// If you want faster ALC response, lower the interval — but keep it > 3 to
+	// ensure the audio thread doesn't stall on I2C during CW key transitions.
+#define TX_POWER_READ_INTERVAL 10
+	{
+		static int power_read_counter = 0;
+		if (++power_read_counter >= TX_POWER_READ_INTERVAL) {
+			power_read_counter = 0;
+			read_power();
+		}
+	}
 
 	// sdr_modulation_update is called once here.
 	// Previously it was called twice (once here and once at the very end after

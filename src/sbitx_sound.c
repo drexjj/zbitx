@@ -827,7 +827,7 @@ int sound_loop(){
 			// Warn if sound_process() used more than 75% of the period budget.
 			// Budget = (frames / sample_rate) * 1e6 = (1024/96000)*1e6 = 10667 us.
 			// With n_periods=4 the real deadline is ~21333 us, but warn early.
-			if (_elapsed_us > 8000)
+			if (_elapsed_us > 7000)
 				fprintf(stderr, "SLOW sound_process: %ld us (frames=%d)\n",
 				        _elapsed_us, ret_card);
 		}
