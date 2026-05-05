@@ -6330,31 +6330,10 @@ void tuning_isr(void)
 		tuning_ticks--;
 }
 
-void query_swr()
-{
-	uint8_t response[4];
-	int16_t vfwd, vref;
-	int vswr;
-	char buff[20];
-
-	if (!in_tx)
-		return;
-	if (i2cbb_read_i2c_block_data(0x8, 0, 4, response) == -1)
-		return;
-
-	vfwd = vref = 0;
-
-	memcpy(&vfwd, response, 2);
-	memcpy(&vref, response + 2, 2);
-	if (vref >= vfwd)
-		vswr = 100;
-	else
-		vswr = (10 * (vfwd + vref)) / (vfwd - vref);
-	sprintf(buff, "%d", (vfwd * 40) / 68);
-	set_field("#fwdpower", buff);
-	sprintf(buff, "%d", vswr);
-	set_field("#vswr", buff);
-}
+/* query_swr() removed — it used I2C address 0x08 (wrong) with a fixed 4-byte binary
+ * protocol (also wrong). On this hardware the Pico 2040 is at address 0x0a and
+ * sends power/SWR data as text ("vbatt %d\npower %d\nvswr %d\n") which
+ * zbitx_poll() already reads correctly via i2cbb_read_rll(0xa, ...). */
 void oled_toggle_band()
 {
 	unsigned int freq_now = field_int("FREQ");

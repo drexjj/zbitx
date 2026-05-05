@@ -73,7 +73,7 @@ void tr_switch(int tx_on);
 // if the Wisdom plans in the file were generated at the same or more rigorous level.
 #define WISDOM_MODE FFTW_MEASURE
 #define PLANTIME -1 // spend no more than plantime seconds finding the best FFT algorithm. -1 turns the platime cap off.
-char wisdom_file[] = "sbitx_wisdom.wis";
+char wisdom_file[64] = "sbitx_wisdom.wis"; /* overwritten in fft_init() with CPU-specific name */
 
 #define NOISE_ALPHA 0.9	   // Smoothing factor for DSP noise estimation 0.0->1.0 >responsive/>stable -> >responsive/>stable
 #define SIGNAL_ALPHA 0.90  // Smoothing factor for DSP observed power spectrum estimation 0.9->0.99 >responsive/>stable -> >responsive/>stable
@@ -95,38 +95,6 @@ static int tx_compress = 0;
 static double spectrum_speed = 0.3;
 static int in_tx = 0;
 
-/* -----------------------------------------------------------------------
- * Background power-read thread
- *
- * read_power() calls i2cbb_read_i2c_block_data() which acquires the shared
- * I2C bus mutex. When the GTK thread holds that mutex for a si5351bx_setfreq()
- * sequence (16 writes, triggered by CW key-down/up), the audio thread used to
- * stall for 38-54ms waiting for the mutex — causing ALSA underruns in CW mode.
- *
- * Fix: run read_power() in a dedicated low-priority background thread at 10 Hz.
- * The audio thread never touches the I2C bus directly. Power/SWR/ALC still
- * update smoothly; 10 Hz is imperceptibly different from 93 Hz on a meter.
- * ----------------------------------------------------------------------- */
-static pthread_t   power_poll_thread;
-static volatile int power_poll_running = 0;
-
-void read_power(); /* forward declaration — defined later in this file */
-
-static void *power_poll_fn(void *arg)
-{
-    (void)arg;
-    /* Run at the lowest possible scheduling priority so the audio thread
-     * (SCHED_FIFO max) and the GTK thread can always preempt us. */
-    struct sched_param sch = { .sched_priority = 0 };
-    pthread_setschedparam(pthread_self(), SCHED_OTHER, &sch);
-
-    while (power_poll_running) {
-        usleep(100000);   /* 100 ms = 10 Hz */
-        if (in_tx)
-            read_power();
-    }
-    return NULL;
-}
 static int rx_tx_ramp = 0;
 static int sidetone = 2000000000;
 struct vfo tone_a, tone_b, am_carrier; // these are audio tone generators
@@ -270,12 +238,54 @@ void fft_init()
 	memset(fft_out, 0, sizeof(fftw_complex) * MAX_BINS);
 	memset(fft_m, 0, sizeof(fftw_complex) * MAX_BINS / 2);
 
+	// Use a CPU-specific wisdom filename so that if the binary is run on
+	// different hardware (e.g. Pi 4 vs Pi Zero 2W), each gets its own
+	// optimised FFTW plan. FFTW_MEASURE plans generated on a Cortex-A72
+	// are not optimal on a Cortex-A53 (different pipelines, cache sizes).
+	// The CPU model string is read from /proc/cpuinfo and hashed into the filename.
+	{
+		char cpu_model[128] = "unknown";
+		FILE *cpuinfo = fopen("/proc/cpuinfo", "r");
+		if (cpuinfo) {
+			char line[256];
+			while (fgets(line, sizeof(line), cpuinfo)) {
+				if (strncmp(line, "Model name", 10) == 0 ||
+				    strncmp(line, "Hardware",   8) == 0 ||
+				    strncmp(line, "Model",      5) == 0) {
+					char *colon = strchr(line, ':');
+					if (colon) {
+						// trim whitespace and use first 40 chars
+						char *p = colon + 1;
+						while (*p == ' ' || *p == '\t') p++;
+						strncpy(cpu_model, p, sizeof(cpu_model)-1);
+						// strip newline
+						char *nl = strchr(cpu_model, '\n');
+						if (nl) *nl = '\0';
+						break;
+					}
+				}
+			}
+			fclose(cpuinfo);
+		}
+		// Build wisdom filename: sbitx_wisdom_<hash>.wis
+		// Use a simple djb2 hash of the CPU string to keep filename clean
+		unsigned long hash = 5381;
+		for (unsigned char *p = (unsigned char *)cpu_model; *p; p++)
+			hash = ((hash << 5) + hash) + *p;
+		snprintf(wisdom_file, sizeof(wisdom_file), "sbitx_wisdom_%08lx.wis", hash & 0xFFFFFFFF);
+		printf("FFTW wisdom file: %s  (CPU: %.40s)\n", wisdom_file, cpu_model);
+	}
+
 	fftw_set_timelimit(PLANTIME);
 	fftwf_set_timelimit(PLANTIME);
 	int e = fftw_import_wisdom_from_filename(wisdom_file);
 	if (e == 0)
 	{
-		printf("Generating Wisdom File...\n");
+		printf("No wisdom for this CPU — running FFTW_MEASURE (takes a few minutes on Pi Zero 2W)...\n");
+	}
+	else
+	{
+		printf("Loaded FFTW wisdom from %s\n", wisdom_file);
 	}
 	plan_fwd = fftw_plan_dft_1d(MAX_BINS, fft_in, fft_out, FFTW_FORWARD, WISDOM_MODE);			 // Was FFTW_ESTIMATE N3SB
 	plan_spectrum = fftw_plan_dft_1d(MAX_BINS, fft_in, fft_spectrum, FFTW_FORWARD, WISDOM_MODE); // Was FFTW_ESTIMATE N3SB
@@ -1872,8 +1882,10 @@ void tx_process(
 		}
 	}
 
-	// read_power() is now called from power_poll_fn() background thread at 10 Hz.
-	// Removed from the audio callback entirely to eliminate I2C mutex stalls.
+	// read_power() is not called here. On this hardware the Pico 2040 (I2C address
+	// 0x0a) handles SWR/power measurement and sends the data as text via zbitx_poll().
+	// The old read_power() used address 0x08 (wrong) and binary protocol (wrong);
+	// it was dead code that never successfully read anything on this hardware.
 
 	// sdr_modulation_update is called once here.
 	// Previously it was called twice (once here and once at the very end after
@@ -2464,11 +2476,6 @@ void setup()
 
     printf("hw version: %d\n", sbitx_version);
 	setup_audio_codec();
-
-	/* Start the background power-read thread before the audio thread so that
-	 * read_power() is never called from the audio callback path. */
-	power_poll_running = 1;
-	pthread_create(&power_poll_thread, NULL, power_poll_fn, NULL);
 
 	sound_thread_start("plughw:0,0");
 
