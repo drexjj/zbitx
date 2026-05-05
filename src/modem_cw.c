@@ -1208,9 +1208,14 @@ void cw_rx(int32_t *samples, int count){
 	//the samples better be an integral multiple of n_bins
 	int decimation_factor = 96000/SAMPLING_FREQ;
 	if (count % (decimation_factor * decoder.n_bins)){
-		printf("cw_decoder bins don't align up with sample block %d vs %d\n",
-			count, decoder.n_bins);
-		assert(0);
+		// On slower hardware (e.g. Pi Zero 2W) ALSA recovery after an underrun
+		// can return a partial frame count that is not a multiple of 1024.
+		// The old assert(0) here would kill the process and cause a restart loop.
+		// We skip this block gracefully instead — the decoder simply misses one
+		// processing cycle, which at worst causes a momentary decode gap.
+		fprintf(stderr, "cw_rx: skipping partial block (count=%d, need multiple of %d)\n",
+			count, decimation_factor * decoder.n_bins);
+		return;
 	}
 
 	//we decimate the samples from 96000 to 12000

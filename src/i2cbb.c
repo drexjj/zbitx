@@ -229,17 +229,24 @@ static uint8_t i2c_read_byte(int nack, int send_stop) {
 
 // KERNEL-LIKE I2C METHODS
 
-// This executes the SMBus “write byte” protocol, returning negative errno else zero on success.
+// This executes the SMBus "write byte" protocol, returning negative errno else zero on success.
+// NOTE: mutex added to match i2cbb_write_i2c_block_data. si5351bx_setfreq() calls this
+// 16 times per frequency change (via i2cSendRegister). Without the mutex the GTK timer
+// thread and audio thread collide on the bus, which is also shared with the Pico 2040
+// display/encoder/mic/speaker. This was causing I2C corruption in CW mode.
 int32_t i2cbb_write_byte_data(uint8_t i2c_address, uint8_t command, uint8_t value) {
     // 7 bit address + 1 bit read/write
     // read = 1, write = 0
     // http://www.totalphase.com/support/articles/200349176-7-bit-8-bit-and-10-bit-I2C-Slave-Addressing
+    pthread_mutex_lock(&i2c_bus_mutex);
+
     uint8_t address = (i2c_address << 1) | 0;
+    int32_t result = -1;
 
     if (!i2c_write_byte(1, 0, address)) {
         if (!i2c_write_byte(0, 0, command)) {
             if (!i2c_write_byte(0, 1, value)) {
-                return 0;
+                result = 0;
             }
         }
         else
@@ -248,20 +255,27 @@ int32_t i2cbb_write_byte_data(uint8_t i2c_address, uint8_t command, uint8_t valu
     else
         i2c_stop_cond();
 
-    return -1;
+    pthread_mutex_unlock(&i2c_bus_mutex);
+    return result;
 }
 
-// This executes the SMBus “read byte” protocol, returning negative errno else a data byte received from the device.
+// This executes the SMBus "read byte" protocol, returning negative errno else a data byte received from the device.
+// NOTE: mutex added for the same reason as i2cbb_write_byte_data above.
 int32_t i2cbb_read_byte_data(uint8_t i2c_address, uint8_t command) {
+    pthread_mutex_lock(&i2c_bus_mutex);
 
     uint8_t address = (i2c_address << 1) | 0;
+    int32_t result = -1;
+
     if (!i2c_write_byte(1, 0, address)) {
 
         if (!i2c_write_byte(0, 0, command)) {
 
             address = (i2c_address << 1) | 1;
             if (!i2c_write_byte(1, 0, address)) {
-                return i2c_read_byte(1, 1);
+                result = i2c_read_byte(1, 1);
+                pthread_mutex_unlock(&i2c_bus_mutex);
+                return result;
             }
             else
                 i2c_stop_cond();
@@ -272,6 +286,7 @@ int32_t i2cbb_read_byte_data(uint8_t i2c_address, uint8_t command) {
     else
         i2c_stop_cond();
 
+    pthread_mutex_unlock(&i2c_bus_mutex);
     return -1;
 }
 

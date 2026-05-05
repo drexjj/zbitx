@@ -142,8 +142,13 @@ void sound_mixer(char *card_name, char *element, int make_on)
 }
 
 int rate = 96000; /* Sample rate */
+// Pi Zero 2W (Cortex-A53 @ 1GHz) needs more buffer headroom than Pi 4 (A72 @ 1.8GHz).
+// Original: buff_size=8192, n_periods=2 → 10.67ms budget per period (too tight at 1GHz).
+// Increased to n_periods=4 → 21.3ms budget. This adds ~10ms latency — imperceptible
+// for CW RX decode but you may notice a slight sidetone delay. If sidetone delay is
+// objectionable, try n_periods_per_buffer = 3 (16ms) as a middle ground.
 static snd_pcm_uframes_t buff_size = 8192; /* Periodsize (bytes) */ 
-static int n_periods_per_buffer = 2;       /* Number of periods */
+static int n_periods_per_buffer = 4;       /* Number of periods (was 2, doubled for Pi Zero 2W) */
 //static int n_periods_per_buffer = 1024;       /* Number of periods */
 
 static snd_pcm_t *pcm_play_handle=0;   	//handle for the pcm device
@@ -805,7 +810,28 @@ int sound_loop(){
 		sound_millis = (gettime_now.tv_sec * 1000) + (gettime_now.tv_nsec/1000000);
 		// printf("\n-%d %ld %d\n", count++, nsamples, pcmreturn);
 
+		// --- Timing instrumentation for Pi Zero 2W debugging ---
+		// Measures how long sound_process() takes each call.
+		// At 96kHz / 1024 frames the budget is 10.67ms (21.3ms with n_periods=4).
+		// If you see "SLOW" messages in CW mode but not others, that confirms the
+		// audio thread is the bottleneck. Remove this block once the issue is resolved.
+		struct timespec _t0, _t1;
+		clock_gettime(CLOCK_MONOTONIC, &_t0);
+
 		sound_process(input_i, input_q, output_i, output_q, ret_card);
+
+		clock_gettime(CLOCK_MONOTONIC, &_t1);
+		{
+			long _elapsed_us = (_t1.tv_sec  - _t0.tv_sec)  * 1000000L
+			                 + (_t1.tv_nsec - _t0.tv_nsec) / 1000L;
+			// Warn if sound_process() used more than 75% of the period budget.
+			// Budget = (frames / sample_rate) * 1e6 = (1024/96000)*1e6 = 10667 us.
+			// With n_periods=4 the real deadline is ~21333 us, but warn early.
+			if (_elapsed_us > 8000)
+				fprintf(stderr, "SLOW sound_process: %ld us (frames=%d)\n",
+				        _elapsed_us, ret_card);
+		}
+		// --- End timing instrumentation ---
 
 		i = 0; 
 		j = 0;	
