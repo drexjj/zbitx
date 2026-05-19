@@ -534,6 +534,25 @@ int data_delay = 700;
 int spectrum_span = 48000;
 extern int spectrum_plot[];
 extern int fwdpower, vswr;
+extern int vbatt_raw;   /* raw battery integer from RP2040 front panel */
+extern int fwdpower_calc, fwdpower_cnt;  /* peak-hold state for power display */
+
+/* Battery voltage calibration.
+ * The RP2040 sends: vbatt_raw = (500 * analogRead(A2)) / 278
+ *
+ * The RP2040 display (smeter_draw in fields.ino) shows:
+ *   v = vbatt / 10;  then  v/10 . v%10  volts
+ * i.e. it divides vbatt by 100 to get volts.
+ * Therefore:  VBATT_SCALE = 1/100 = 0.01
+ *
+ * Verification: vbatt_raw ≈ 800 → 800 × 0.01 = 8.0V  ✓
+ *
+ * To calibrate: measure your supply with a multimeter and adjust:
+ *   VBATT_SCALE = measured_volts / vbatt_raw
+ */
+#define VBATT_SCALE   0.01f         /* vbatt_raw × VBATT_SCALE = volts        */
+#define VBATT_MIN_V   6.0f          /* bar low  end (depleted 2S LiPo ≈ 6V)  */
+#define VBATT_MAX_V   9.0f          /* bar high end (9V supply / full 2S)     */
 
 void do_control_action(char *cmd);
 void cmd_exec(char *cmd);
@@ -2319,6 +2338,25 @@ void draw_tx_meters(struct field *f, cairo_t *gfx)
 	draw_text(gfx, f->x + 5, f->y + 5, meter_str, FONT_FIELD_LABEL);
 	sprintf(meter_str, "VSWR: %d.%d", vswr / 10, vswr % 10);
 	draw_text(gfx, f->x + 135, f->y + 5, meter_str, FONT_FIELD_LABEL);
+
+	/* ── Battery voltage ── drawn at right side of the TX meter bar ── */
+	if (vbatt_raw > 0) {
+		float vbatt_v = (float)vbatt_raw * VBATT_SCALE;
+
+		/* colour-coded: green ≥ 7.5 V, yellow ≥ 6.5 V, red below */
+		if (vbatt_v >= 7.5f)
+			cairo_set_source_rgb(gfx, 0.10, 0.80, 0.15);
+		else if (vbatt_v >= 6.5f)
+			cairo_set_source_rgb(gfx, 0.90, 0.75, 0.05);
+		else
+			cairo_set_source_rgb(gfx, 0.90, 0.15, 0.10);
+
+		snprintf(meter_str, sizeof(meter_str), "Batt: %.2fV", vbatt_v);
+		draw_text(gfx, f->x + 270, f->y + 5, meter_str, FONT_FIELD_LABEL);
+
+		/* Reset colour so subsequent drawing uses the theme default */
+		cairo_set_source_rgb(gfx, 1.0, 1.0, 1.0);
+	}
 }
 
 void draw_waterfall(struct field *f, cairo_t *gfx)
@@ -4373,7 +4411,7 @@ void call_wipe()
 
 void update_titlebar()
 {
-	char buff[100];
+	char buff[200];
 
 	time_t now = time_sbitx();
 	struct tm *tmp = gmtime(&now);
@@ -4381,6 +4419,14 @@ void update_titlebar()
 	{
 		sprintf(buff, "BATT: %.2fV / %.2fA  %s  %s  %s  %04d/%02d/%02d  %02d:%02d:%02dZ",
 				voltage, current, VER_STR, get_field("#mycallsign")->value, get_field("#mygrid")->value,
+				tmp->tm_year + 1900, tmp->tm_mon + 1, tmp->tm_mday, tmp->tm_hour, tmp->tm_min, tmp->tm_sec);
+	}
+	else if (vbatt_raw > 0)
+	{
+		/* Show voltage from the RP2040 front panel when INA260 is not fitted */
+		sprintf(buff, "Batt: %.2fV  %s  %s  %s  %04d/%02d/%02d  %02d:%02d:%02dZ",
+				(float)vbatt_raw * VBATT_SCALE,
+				VER_STR, get_field("#mycallsign")->value, get_field("#mygrid")->value,
 				tmp->tm_year + 1900, tmp->tm_mon + 1, tmp->tm_mday, tmp->tm_hour, tmp->tm_min, tmp->tm_sec);
 	}
 	else
@@ -5687,6 +5733,13 @@ void tx_off()
 		set_operating_freq(atoi(freq->value), response);
 		update_field(get_field("r1:freq"));
 		// printf("RX\n");
+
+		/* Reset the power meter peak-hold state so the meter drops to 0
+		 * immediately on RX rather than holding the last TX reading. */
+		fwdpower      = 0;
+		fwdpower_calc = 0;
+		fwdpower_cnt  = 0;
+		vswr          = 10;   /* 1.0 : 1 */
 	}
 	sound_input(0); // it is a low overhead call, might as well be sure
 }
@@ -6460,28 +6513,10 @@ void tuning_isr(void)
 
 void query_swr()
 {
-	uint8_t response[4];
-	int16_t vfwd, vref;
-	int vswr;
-	char buff[20];
-
-	if (!in_tx)
-		return;
-	if (i2cbb_read_i2c_block_data(0x8, 0, 4, response) == -1)
-		return;
-
-	vfwd = vref = 0;
-
-	memcpy(&vfwd, response, 2);
-	memcpy(&vref, response + 2, 2);
-	if (vref >= vfwd)
-		vswr = 100;
-	else
-		vswr = (10 * (vfwd + vref)) / (vfwd - vref);
-	sprintf(buff, "%d", (vfwd * 40) / 68);
-	set_field("#fwdpower", buff);
-	sprintf(buff, "%d", vswr);
-	set_field("#vswr", buff);
+	/* ATtiny85 SWR bridge at I2C 0x8 has been removed.
+	 * fwdpower and vswr are now set by the RP2040 front panel text parser
+	 * inside zbitx_poll().  This function is kept as a no-op so any
+	 * existing call sites compile without changes. */
 }
 void oled_toggle_band()
 {
@@ -6902,6 +6937,57 @@ void zbitx_poll(int all){
 	//zero terminate the reply
 		buff[reply_length] = 0;
 
+		/* ── Parse RP2040 telemetry lines ────────────────────────────────────
+		 * The RP2040 on_request() callback sends a newline-separated block:
+		 *   "vbatt N\npower N\nvswr N\n"
+		 * These are NOT {LABEL VALUE} commands so we parse them here directly
+		 * before routing anything else through remote_execute().
+		 *
+		 * NOTE: We do NOT guard on in_tx here. The globals are always updated
+		 * from the RP2040 data; the display layer in ui_tick() applies the
+		 * in_tx gate when pushing values to the screen fields.
+		 * ──────────────────────────────────────────────────────────────────── */
+		{
+			char *line = buff;
+			int matched = 0;
+			while (line && *line) {
+				char key[32] = {0};
+				char val[32] = {0};
+				if (sscanf(line, "%31s %31s", key, val) == 2) {
+					if (!strcmp(key, "vbatt")) {
+						vbatt_raw = atoi(val);
+						matched++;
+					} else if (!strcmp(key, "power")) {
+						int raw = atoi(val);
+						/* The RP2040's vfwd is in units of 0.1 W — the same scale used
+						 * by smeter_draw() on the RP2040 display (sprintf "%d W", vfwd/10).
+						 * Do NOT apply the old ATtiny85 bridge/quadratic formula here;
+						 * just pass vfwd straight through as fwdpower.
+						 * draw_tx_meters() already divides fwdpower by 10 to get watts. */
+						if (raw > fwdpower_calc)
+							fwdpower_calc = raw;
+						if (!fwdpower_cnt) {
+							fwdpower = fwdpower_calc;
+							fwdpower_calc = raw;
+						}
+						if (!fwdpower)
+							fwdpower = raw;
+						fwdpower_cnt = (fwdpower_cnt + 1) % 100;
+						matched++;
+					} else if (!strcmp(key, "vswr")) {
+						vswr = atoi(val);
+						matched++;
+					}
+				}
+				line = strchr(line, '\n');
+				if (line) line++;
+			}
+
+			/* If we consumed all three telemetry fields, skip remote_execute */
+			if (matched >= 3)
+				goto zbitx_poll_done;
+		}
+
 		if(!strncmp(buff, "FT8 ", 4)){
 			char ft8_message[100];
 			hd_strip_decoration(ft8_message, buff);
@@ -6917,6 +7003,7 @@ void zbitx_poll(int all){
 			remote_execute(buff);
 		}
 	}
+	zbitx_poll_done:
 	last_update = this_time;
 }
 
@@ -7199,13 +7286,15 @@ gboolean ui_tick(gpointer gook)
 		if (zbitx_available)
 			zbitx_poll(0);
 
-		if (in_tx)
 		{
-			char buff[10];
+			char buff[20];
 
-			sprintf(buff, "%d", fwdpower);
+			/* fwdpower and vswr are now set by the RP2040 parser in zbitx_poll().
+			 * Push them to the display fields on every tick cycle, not just in_tx,
+			 * so the meter returns to zero correctly when we stop transmitting. */
+			sprintf(buff, "%d", in_tx ? fwdpower : 0);
 			set_field("#fwdpower", buff);
-			sprintf(buff, "%d", vswr);
+			sprintf(buff, "%d", in_tx ? vswr : 10);  /* 10 = SWR 1.0 when RX */
 			set_field("#vswr", buff);
 		}
 		if (layout_needs_refresh)

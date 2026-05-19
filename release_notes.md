@@ -1,3 +1,6 @@
+# v5.02
+- Fixed SWR/PWR and Batt Voltage Display for GTK Interface. Requires frontpanel v1.10
+
 # v5.01
 - Fixed logbook open command for web interface
 - Fixed the tune toggle function in the web interface

@@ -56,6 +56,7 @@ int sbitx_version = -1;
 int fwdpower, vswr;
 int fwdpower_calc;
 int fwdpower_cnt;
+int vbatt_raw = 0;   /* raw battery voltage integer from RP2040 front panel */
 
 float fft_bins[MAX_BINS]; // spectrum ampltiudes
 float spectrum_window[MAX_BINS];
@@ -1506,61 +1507,18 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		}
 	}
 }
+/* read_power() has been removed.
+ * The ATtiny85 SWR bridge at I2C 0x8 is no longer present in hardware.
+ * fwdpower, vswr, and vbatt_raw are now set directly by the RP2040 front
+ * panel text parser in zbitx_poll() inside sbitx_gtk.c.
+ * The RP2040 sends: "vbatt N\npower N\nvswr N\n" on every on_request() call.
+ *
+ * ALC still works: the GTK parser updates fwdpower from the RP2040 value
+ * which carries the same scaled ADC units the old ATtiny85 produced.
+ */
 void read_power()
 {
-	uint8_t response[4];
-	int16_t vfwd, vref;
-	int fwdpw;
-
-	char buff[20];
-
-	if (!in_tx)
-		return;
-	if (i2cbb_read_i2c_block_data(0x8, 0, 4, response) == -1)
-		return;
-
-	vfwd = vref = 0;
-
-	memcpy(&vfwd, response, 2);
-	memcpy(&vref, response + 2, 2);
-	//	printf("%d:%d\n", vfwd, vref);
-
-        if (vref >= vfwd)
-		vswr = 100;
-	else
-		vswr = (10 * (vfwd + vref)) / (vfwd - vref);
-
-	// here '400' is the scaling factor as our ref power output is 40 watts
-	// this calculates the power as 1/10th of a watt, 400 = 40 watts
-	int fwdvoltage = (vfwd * 40) / bridge_compensation;
-
-	// Implement a simple "hold" algorithm in order to show
-	// readable and meaningful power readings that should be the pep power
-	fwdpw = (fwdvoltage * fwdvoltage) / 400;
-	if (fwdpw > fwdpower_calc) {
-		fwdpower_calc = fwdpw;
-	}
-	if (!fwdpower_cnt) {
-		fwdpower = fwdpower_calc;
-		fwdpower_calc = fwdpw;
-	}
-	if (!fwdpower)
-		fwdpower = fwdpw;
-	fwdpower_cnt = ++fwdpower_cnt % 100;
-
-	int rf_v_p2p = (fwdvoltage * 126) / 400;
-	//	printf("rf volts: %d, alc %g, %d watts ", rf_v_p2p, alc_level, fwdpower/10);
-	if (rf_v_p2p > 135 && !in_calibration)
-	{
-		alc_level *= 135.0 / (1.0 * rf_v_p2p);
-		printf("ALC tripped, to %d percent\n", (int)(100 * alc_level));
-	}
-	/*	else if (alc_level < 0.95){
-			printf("alc releasing to ");
-			alc_level *= 1.02;
-		}
-	*/
-	//	printf("alc: %g\n", alc_level);
+	/* no-op: data now comes from RP2040 front panel via sbitx_gtk.c */
 }
 
 static int tx_process_restart = 0;
@@ -1818,11 +1776,8 @@ void tx_process(
 	}
 	//	printf("min %d, max %d\n", min, max);
 	
-	if (sbitx_version < 4)
-		read_power();
+	/* read_power() calls removed: power/SWR data now comes from RP2040 front panel */
 	sdr_modulation_update(output_tx, MAX_BINS/2, tx_amp);
-
-	read_power();
 
 	// Instead of using sdr_modulation_update, we'll update the spectrum data directly
 	// This allows the TX audio to be displayed in the spectrum and waterfall
@@ -2416,14 +2371,11 @@ void setup()
 	tx_list->tuned_bin = 512;
 	tx_init(7000000, MODE_LSB, -3000, -150);
 
-	// detect the version of sbitx
-	if (sbitx_version == -1){
-		uint8_t response[4];
-		if(i2cbb_read_i2c_block_data(0x8, 0, 4, response) == -1)
-			sbitx_version = SBITX_DE;
-		else
-			sbitx_version = SBITX_V2;
-	}
+	/* Version detection: ATtiny85 SWR bridge at I2C 0x8 has been removed.
+	 * hw version is now read from hw_settings.ini (hw= key).
+	 * If not set there, default to SBITX_V4 (zBitx with RP2040 front panel). */
+	if (sbitx_version == -1)
+		sbitx_version = SBITX_V4;
 
     printf("hw version: %d\n", sbitx_version);
 	setup_audio_codec();
