@@ -753,13 +753,24 @@ int sound_loop(){
 		pcm_read_old_time = pcm_read_new_time;
 #endif
 		
-		while ((pcmreturn = snd_pcm_readi(pcm_capture_handle, data_in, frames)) < 0)
-		{
-			result = snd_pcm_prepare(pcm_capture_handle);
-#if DEBUG > 0
-			printf("**** PCM Capture Error: %s  count = %d\n",snd_strerror(pcmreturn), pcm_capture_error++);
-#endif
-		}
+// Drain any accumulated capture backlog before reading.
+// If sound_process() was slow (e.g. due to a TX spectrum FFT spike),
+// extra periods pile up in the capture FIFO. Reading them all without
+// discarding causes the playback buffer fill to grow, adding latency
+// that compounds on every subsequent slow block.
+{
+    snd_pcm_sframes_t avail = snd_pcm_avail_update(pcm_capture_handle);
+    if (avail > (snd_pcm_sframes_t)(frames * 2)) {
+        // More than 2 periods queued — we're behind. Drop down to 1 period ahead.
+        snd_pcm_sframes_t to_drop = avail - frames;
+        snd_pcm_forward(pcm_capture_handle, to_drop);
+        fprintf(stderr, "capture backlog: dropped %ld frames to resync\n", to_drop);
+    }
+}
+while ((pcmreturn = snd_pcm_readi(pcm_capture_handle, data_in, frames)) < 0)
+{
+    result = snd_pcm_prepare(pcm_capture_handle);
+}
 #if DEBUG > 1		
 		printf("Delta Time: %d, Available output sample storage: %d\n", delta_time, snd_pcm_avail(pcm_play_handle));
 #endif		
