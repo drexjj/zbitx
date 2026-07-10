@@ -754,17 +754,21 @@ int sound_loop(){
 #endif
 		
 // Drain any accumulated capture backlog before reading.
-// If sound_process() was slow (e.g. due to a TX spectrum FFT spike),
-// extra periods pile up in the capture FIFO. Reading them all without
-// discarding causes the playback buffer fill to grow, adding latency
-// that compounds on every subsequent slow block.
 {
     snd_pcm_sframes_t avail = snd_pcm_avail_update(pcm_capture_handle);
-    if (avail > (snd_pcm_sframes_t)(frames * 2)) {
-        // More than 2 periods queued — we're behind. Drop down to 1 period ahead.
-        snd_pcm_sframes_t to_drop = avail - frames;
-        snd_pcm_forward(pcm_capture_handle, to_drop);
-        fprintf(stderr, "capture backlog: dropped %ld frames to resync\n", to_drop);
+    
+    // Check if we have more than 3 periods backed up
+    if (avail > (snd_pcm_sframes_t)(frames * 3)) {
+        // Drop down to 2 periods ahead (safer cushion than 1)
+        snd_pcm_sframes_t to_drop = avail - (frames * 2);
+        
+        if (to_drop > 0) {
+            // Use snd_pcm_forward to safely advance the read pointer
+            snd_pcm_sframes_t forwarded = snd_pcm_forward(pcm_capture_handle, to_drop);
+            if (forwarded > 0) {
+                fprintf(stderr, "capture backlog: dropped %ld frames to resync\n", forwarded);
+            }
+        }
     }
 }
 while ((pcmreturn = snd_pcm_readi(pcm_capture_handle, data_in, frames)) < 0)
