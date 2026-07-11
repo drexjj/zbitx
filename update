@@ -7,7 +7,7 @@ echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 date
 cd $HOME/sbitx
 git stash --include-untracked
-git remote set-url origin https://github.com/MikeJohnshoy/mj_zbitx.git
+git remote set-url origin https://github.com/drexjj/zbitx.git
 git pull
 git checkout dev
 cd $HOME/sbitx/src/ft8_lib
