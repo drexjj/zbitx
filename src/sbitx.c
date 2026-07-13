@@ -1613,6 +1613,15 @@ void tx_process(
 	int32_t *output_speaker, int32_t *output_tx,
 	int n_samples)
 {
+  // --- per-call timing instrumentation ---
+  struct timespec ts_start, ts_end;
+  clock_gettime(CLOCK_MONOTONIC, &ts_start);
+
+  static long     perf_accum_ns  = 0;   // accumulated nanoseconds
+  static int      perf_call_count = 0;  // calls this reporting period
+  const  int      PERF_PERIOD    = 94; // report every 94 calls (1 second at 10.6 ms per call)
+  // end of timing code
+
 	int i;
 	double i_sample, q_sample, i_carrier;
 	
@@ -1969,6 +1978,30 @@ void tx_process(
 			spectrum_update();
 		} // end tx_spectrum_counter block
 	}
+
+  // --- timing: accumulate and report ---
+  clock_gettime(CLOCK_MONOTONIC, &ts_end);
+  perf_accum_ns += (long)(ts_end.tv_sec  - ts_start.tv_sec ) * 1000000000L
+                 + (long)(ts_end.tv_nsec - ts_start.tv_nsec);
+  perf_call_count++;
+
+  if (perf_call_count >= PERF_PERIOD) {
+    // total wall-clock nanoseconds for the window
+    long total_ns   = perf_accum_ns;
+    long avg_ns     = total_ns / PERF_PERIOD;
+    // % of a 1-second budget consumed
+    double pct_cpu  = (double)total_ns / 1e9 * 100.0;
+
+    fprintf(stderr,
+      "[tx_process] total=%ld us  avg=%ld ns/call  cpu=%.2f%%\n",
+      total_ns / 1000, avg_ns, pct_cpu);
+
+    perf_accum_ns  = 0;
+    perf_call_count = 0;
+  }
+  // end of timing code
+
+
 }
 
 /*
