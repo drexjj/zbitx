@@ -1198,6 +1198,11 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 	int i = 0;
 	double i_sample;
 
+	// --- Stage timing (temporary diagnostic, mirrors tx_process instrumentation) ---
+	struct timespec _rA, _rA2, _rB, _rC, _rD, _rD2, _rE, _rF;
+	clock_gettime(CLOCK_MONOTONIC, &_rA);
+	// --- end preamble ---
+
 	// STEP 1: First add the previous M samples
 	// memcpy to replace for loop, ffts are 16 bytes
 	memcpy(fft_in, fft_m, MAX_BINS / 2 * 8 * 2);
@@ -1216,14 +1221,31 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		m++;
 	}
 
+	clock_gettime(CLOCK_MONOTONIC, &_rA2);  // after gather loop, before fwd FFT itself
+
 	// STEP 3: Convert to frequency domain
 	my_fftw_execute(plan_fwd);
 
+	clock_gettime(CLOCK_MONOTONIC, &_rB);  // after fwd FFT execute
+
 	// STEP 3B: Spectrum update for user interface
-	for (i = 0; i < MAX_BINS; i++)
-		__real__ fft_in[i] *= spectrum_window[i];
-	my_fftw_execute(plan_spectrum);
-	spectrum_update();
+	// Throttled: the waterfall/spectrum display doesn't need refreshing at the
+	// full audio-block rate (~93.75 Hz at 1024 samples/96kHz). Doing so was
+	// costing a full extra MAX_BINS-point FFT plus an MAX_BINS-length windowing
+	// multiply on every single call. fft_in isn't read again later in this
+	// function (it's fully rebuilt from fft_m next call), so skipping this
+	// most of the time is safe.
+	static int spectrum_decim = 0;
+	if (++spectrum_decim >= 6)   // ~15.6 Hz refresh, plenty for a display
+	{
+		spectrum_decim = 0;
+		for (i = 0; i < MAX_BINS; i++)
+			__real__ fft_in[i] *= spectrum_window[i];
+		my_fftw_execute(plan_spectrum);
+		spectrum_update();
+	}
+
+	clock_gettime(CLOCK_MONOTONIC, &_rC);  // after (throttled) spectrum FFT
 
 	// STEP 4: Rotate the bins around by r->tuned_bin
 	struct rx *r = rx_list;
@@ -1382,10 +1404,10 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		if (dsp_enabled)
 		{
 			// Spectral Subtraction filter
+			static double previous_magnitude[MAX_BINS] = {0};
 			for (i = 0; i < MAX_BINS; i++)
 			{
 				double magnitude = cabs(r->fft_freq[i]);
-				double phase = carg(r->fft_freq[i]);
 				double noise_magnitude = noise_est[i];
 
 				// Calculate the SNR
@@ -1395,19 +1417,23 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 				// Sigmoid-based reduction factor
 				double reduction_factor = 1.0 / (1.0 + exp(-5.0 * (snr - 0.5))); // Sharp and low-midpoint curve
 
-
 				// Calculate new magnitude with residual noise preservation
 				double noise_residual = 0.10; // Retain 10% of noise, reduces
 				new_magnitude = fmax(noise_residual * noise_magnitude,
 									magnitude - reduction_factor * noise_magnitude);
 
 				// Smoother bin-to-bin transitions (blend current and adjacent bins)
-				static double previous_magnitude[MAX_BINS] = {0};
 				new_magnitude = 0.9 * new_magnitude + 0.1 * previous_magnitude[i]; // Stronger weight on current bin
 				previous_magnitude[i] = new_magnitude;
 
-				// Reconstruct the frequency domain signal
-				r->fft_freq[i] = new_magnitude * cexp(I * phase);
+				// Rescale the bin directly instead of decomposing to magnitude/phase
+				// and reconstructing with cexp(I*phase). Scaling a complex number by
+				// a nonnegative real preserves its phase automatically, so this gets
+				// the identical result while dropping a carg() (atan2) and a cexp()
+				// (sin+cos) per bin -- previously two of the more expensive calls in
+				// this loop, done MAX_BINS times, every single audio callback.
+				double scale = (magnitude > 1e-12) ? (new_magnitude / magnitude) : 0.0;
+				r->fft_freq[i] *= scale;
 			}
 		}
 
@@ -1441,6 +1467,8 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		}
 	}
 
+	clock_gettime(CLOCK_MONOTONIC, &_rD);  // after notch/noise-est/spectral-subtraction/ANR
+
 	// STEP 5: Zero out the other sideband
 	switch (r->mode)
 	{
@@ -1469,8 +1497,12 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		r->fft_freq[i] *= r->filter->fir_coeff[i];
 	}
 
+	clock_gettime(CLOCK_MONOTONIC, &_rD2);  // after sideband-zero + FIR multiply, before rev FFT itself
+
 	// STEP 7: Convert back to time domain
 	my_fftw_execute(r->plan_rev);
+
+	clock_gettime(CLOCK_MONOTONIC, &_rE);  // after rev FFT execute
 
 	// STEP 8: AGC
 	agc2(r);
@@ -1517,38 +1549,82 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 
 	// Apply RXEQ after Modem only on non-digital modes
 	if (r->mode != MODE_DIGITAL && r->mode != MODE_FT8 && r->mode != MODE_2TONE)
-{
-    if (rx_eq_is_enabled == 1)
-    {
-        // Step 1: Apply EQ with built-in normalization and clamping
-        apply_eq(&rx_eq, output_speaker, n_samples, 48000.0);
+	{
+		if (rx_eq_is_enabled == 1)
+		{
+			// Step 1: Apply EQ with built-in normalization and clamping
+			apply_eq(&rx_eq, output_speaker, n_samples, 48000.0);
 
-        // Step 2: Optionally apply soft limiting (only if additional smoothing is required)
-        const double limiter_threshold = 0.8 * 500000000; // Lower limiter threshold for headroom 
+			// Step 2: Optionally apply soft limiting (only if additional smoothing is required)
+			const double limiter_threshold = 0.8 * 500000000; // Lower limiter threshold for headroom
 
-        for (int i = 0; i < n_samples; i++)
-        {
-            double sample = output_speaker[i];
+			for (int i = 0; i < n_samples; i++)
+			{
+				double sample = output_speaker[i];
 
-            // Apply smooth limiting if sample exceeds threshold
-            if (fabs(sample) > limiter_threshold)
-            {
-                sample = limiter_threshold * tanh(sample / limiter_threshold);
-            }
+				// Apply smooth limiting if sample exceeds threshold
+				if (fabs(sample) > limiter_threshold)
+				{
+					sample = limiter_threshold * tanh(sample / limiter_threshold);
+				}
 
-            output_speaker[i] = (int32_t)sample;
-        }
-    }
-}
-// Push the samples to the remote audio queue, decimated to 16000 samples/sec
-// Moved after EQ processing so qremote gets the equalized audio when applicable
+				output_speaker[i] = (int32_t)sample;
+			}
+		}
+	}
+
+	// Push the samples to the remote audio queue, decimated to 16000 samples/sec
+	// Moved after EQ processing so qremote gets the equalized audio when applicable
 	if (rx_list->output == 0) {
 		for (i = 0; i < MAX_BINS / 2; i += 6)
 		{
 			q_write(&qremote, output_speaker[i]);
 		}
 	}
+
+	clock_gettime(CLOCK_MONOTONIC, &_rF);  // after AGC, modem_rx, EQ/limiter, decimation
+
+	{
+		static long accum_gather = 0, accum_fwd_fft = 0, accum_spectrum = 0, accum_dsp = 0;
+		static long accum_sb_fir = 0, accum_rev_fft = 0, accum_tail = 0, accum_total = 0;
+		static long max_us_seen = 0;
+		static int  section_cnt = 0;
+
+		long us_gather   = (_rA2.tv_sec-_rA.tv_sec)*1000000L + (_rA2.tv_nsec-_rA.tv_nsec)/1000L;
+		long us_fwd_fft  = (_rB.tv_sec-_rA2.tv_sec)*1000000L + (_rB.tv_nsec-_rA2.tv_nsec)/1000L;
+		long us_spectrum = (_rC.tv_sec-_rB.tv_sec)*1000000L + (_rC.tv_nsec-_rB.tv_nsec)/1000L;
+		long us_dsp      = (_rD.tv_sec-_rC.tv_sec)*1000000L + (_rD.tv_nsec-_rC.tv_nsec)/1000L;
+		long us_sb_fir   = (_rD2.tv_sec-_rD.tv_sec)*1000000L + (_rD2.tv_nsec-_rD.tv_nsec)/1000L;
+		long us_rev_fft  = (_rE.tv_sec-_rD2.tv_sec)*1000000L + (_rE.tv_nsec-_rD2.tv_nsec)/1000L;
+		long us_tail     = (_rF.tv_sec-_rE.tv_sec)*1000000L + (_rF.tv_nsec-_rE.tv_nsec)/1000L;
+		long us_total    = us_gather + us_fwd_fft + us_spectrum + us_dsp + us_sb_fir + us_rev_fft + us_tail;
+
+		accum_gather  += us_gather;
+		accum_fwd_fft += us_fwd_fft;
+		accum_spectrum+= us_spectrum;
+		accum_dsp     += us_dsp;
+		accum_sb_fir  += us_sb_fir;
+		accum_rev_fft += us_rev_fft;
+		accum_tail    += us_tail;
+		accum_total   += us_total;
+		if (us_total > max_us_seen) max_us_seen = us_total;
+		section_cnt++;
+
+		if (section_cnt >= 94) {  // ~1 second at 96kHz/1024 frames
+			double pct = 100.0 * accum_total / 1e6;
+			fprintf(stderr,
+				"[rx_linear] total=%ldus (cpu=%.2f%%)  worst_call=%ldus  gather=%ldus  fwd_fft=%ldus  "
+				"spectrum=%ldus  dsp=%ldus  sb_fir=%ldus  rev_fft=%ldus  tail=%ldus\n",
+				accum_total, pct, max_us_seen, accum_gather, accum_fwd_fft,
+				accum_spectrum, accum_dsp, accum_sb_fir, accum_rev_fft, accum_tail);
+			accum_gather = accum_fwd_fft = accum_spectrum = accum_dsp = 0;
+			accum_sb_fir = accum_rev_fft = accum_tail = accum_total = 0;
+			max_us_seen = 0;
+			section_cnt = 0;
+		}
+	}
 }
+
 void read_power()
 {
 	uint8_t response[4];
