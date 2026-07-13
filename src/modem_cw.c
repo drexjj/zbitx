@@ -467,24 +467,14 @@ void handle_cw_state_machine(uint8_t, uint8_t);
 float cw_tx_get_sample() {
   float sample = 0;
   uint8_t state_machine_mode;
-  uint8_t symbol_now;
+  static uint8_t symbol_now = CW_IDLE;
   
   if ((keydown_count == 0) && (keyup_count == 0)) {
-    static int millis_skip = 0;
-    if (++millis_skip >= 1024) {
-      millis_skip = 0;
-      millis_now = millis();
-    }
-    static uint8_t cw_was_down = 0;
-    if (cw_current_symbol == CW_DOWN) {
-      if (!cw_was_down) {
-        if (cw_tone.freq_hz != get_pitch())
-          vfo_start(&cw_tone, get_pitch(), 0);
-        cw_was_down = 1;
-      }
-    } else {
-      cw_was_down = 0;
-    }
+    // note current time to use with UI value of CW_DELAY to control break-in
+    millis_now = millis();
+    // set CW pitch if needed
+    if (cw_tone.freq_hz != get_pitch())
+      vfo_start( &cw_tone, get_pitch(), 0);
   }
   
   // check to see if input available from macro or keyboard
@@ -527,7 +517,7 @@ float cw_tx_get_sample() {
           keyup_count--;
       }
   }
-  sample = (vfo_read(&cw_tone) / FLOAT_SCALE) * cw_envelope;
+  sample = ((vfo_read(&cw_tone) / FLOAT_SCALE) * cw_envelope) / 8;
   
   // keep extending 'cw_tx_until' while we're sending
   if ((symbol_now == CW_DOWN) || (symbol_now == CW_DOT) ||
@@ -539,7 +529,7 @@ float cw_tx_get_sample() {
   if (cw_bytes_available != 0)
     cw_tx_until = millis_now + 1000;
 
-  return sample / 8;
+  return sample;
 }
 
 
