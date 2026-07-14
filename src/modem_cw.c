@@ -379,6 +379,8 @@ static float cw_envelope = 0.0f;   // current envelope amplitude
 static int cw_envelope_pos = 0;    // position within cw_envelope_data[]
 static int cw_tx_until = 0;        // delay switching to rx, expect more txing
 static int data_tx_until = 0;
+static int cached_pitch = 0;       // seeded in cw_init() to avoid a spurious
+                                    // 0 Hz retune on the very first idle sample
 
 static char *symbol_next = NULL;
 pthread_t iambic_thread;
@@ -468,8 +470,6 @@ float cw_tx_get_sample() {
   float sample = 0;
   uint8_t state_machine_mode;
   static uint8_t symbol_now = CW_IDLE;
-  
-  static int cached_pitch = 0;
   static int pitch_poll_counter = 0;
   if ((keydown_count == 0) && (keyup_count == 0)) {
     millis_now = millis();
@@ -1377,7 +1377,10 @@ void cw_init(){
 	cw_rx_bin_init(&decoder.signal, INIT_TONE, N_BINS, SAMPLING_FREQ);
 	
 	//init cw tx with some reasonable values
-	vfo_start(&cw_tone, 700, 0);
+	cached_pitch = get_pitch();   // seed before first vfo_start so cw_tx_get_sample()
+	                              // doesn't see a stale 0 Hz cached_pitch and
+	                              // retune to silence before the pitch is first polled
+	vfo_start(&cw_tone, cached_pitch, 0);
 	cw_period = 9600;        // At 96ksps, 0.1sec = 1 dot at 12wpm
 	cw_key_letter[0] = 0;
 	keydown_count = 0;
