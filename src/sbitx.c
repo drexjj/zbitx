@@ -1,4 +1,3 @@
-
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -1191,6 +1190,13 @@ int calculate_zero_beat(struct rx *r, double sampling_rate) {
 }
 
 
+// Section-timing instrumentation for rx_linear()/tx_process(), used to
+// diagnose ALSA underruns on Pi Zero 2W. Costs ~zero when built with this
+// set to 0 (all clock_gettime()/fprintf() calls compile out entirely).
+// Flip to 1 and rebuild any time you need the per-section/worst-call
+// breakdown again -- see chat history for how to read the output.
+#define RX_TX_TIMING_DEBUG 0
+
 // rx_linear with Spectral Subtraction and Wiener Filter DSP filtering - W2JON
 void rx_linear(int32_t *input_rx, int32_t *input_mic,
 			   int32_t *output_speaker, int32_t *output_tx, int n_samples)
@@ -1199,8 +1205,10 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 	double i_sample;
 
 	// --- Stage timing (temporary diagnostic, mirrors tx_process instrumentation) ---
+#if RX_TX_TIMING_DEBUG
 	struct timespec _rA, _rA2, _rB, _rC, _rD, _rD2, _rE, _rF;
 	clock_gettime(CLOCK_MONOTONIC, &_rA);
+#endif
 	// --- end preamble ---
 
 	// STEP 1: First add the previous M samples
@@ -1221,12 +1229,16 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		m++;
 	}
 
+#if RX_TX_TIMING_DEBUG
 	clock_gettime(CLOCK_MONOTONIC, &_rA2);  // after gather loop, before fwd FFT itself
+#endif
 
 	// STEP 3: Convert to frequency domain
 	my_fftw_execute(plan_fwd);
 
+#if RX_TX_TIMING_DEBUG
 	clock_gettime(CLOCK_MONOTONIC, &_rB);  // after fwd FFT execute
+#endif
 
 	// STEP 3B: Spectrum update for user interface
 	// Throttled: the waterfall/spectrum display doesn't need refreshing at the
@@ -1245,7 +1257,9 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		spectrum_update();
 	}
 
+#if RX_TX_TIMING_DEBUG
 	clock_gettime(CLOCK_MONOTONIC, &_rC);  // after (throttled) spectrum FFT
+#endif
 
 	// STEP 4: Rotate the bins around by r->tuned_bin
 	struct rx *r = rx_list;
@@ -1417,6 +1431,7 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 				// Sigmoid-based reduction factor
 				double reduction_factor = 1.0 / (1.0 + exp(-5.0 * (snr - 0.5))); // Sharp and low-midpoint curve
 
+
 				// Calculate new magnitude with residual noise preservation
 				double noise_residual = 0.10; // Retain 10% of noise, reduces
 				new_magnitude = fmax(noise_residual * noise_magnitude,
@@ -1467,7 +1482,9 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		}
 	}
 
+#if RX_TX_TIMING_DEBUG
 	clock_gettime(CLOCK_MONOTONIC, &_rD);  // after notch/noise-est/spectral-subtraction/ANR
+#endif
 
 	// STEP 5: Zero out the other sideband
 	switch (r->mode)
@@ -1497,12 +1514,16 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		r->fft_freq[i] *= r->filter->fir_coeff[i];
 	}
 
+#if RX_TX_TIMING_DEBUG
 	clock_gettime(CLOCK_MONOTONIC, &_rD2);  // after sideband-zero + FIR multiply, before rev FFT itself
+#endif
 
 	// STEP 7: Convert back to time domain
 	my_fftw_execute(r->plan_rev);
 
+#if RX_TX_TIMING_DEBUG
 	clock_gettime(CLOCK_MONOTONIC, &_rE);  // after rev FFT execute
+#endif
 
 	// STEP 8: AGC
 	agc2(r);
@@ -1549,32 +1570,31 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 
 	// Apply RXEQ after Modem only on non-digital modes
 	if (r->mode != MODE_DIGITAL && r->mode != MODE_FT8 && r->mode != MODE_2TONE)
-	{
-		if (rx_eq_is_enabled == 1)
-		{
-			// Step 1: Apply EQ with built-in normalization and clamping
-			apply_eq(&rx_eq, output_speaker, n_samples, 48000.0);
+{
+    if (rx_eq_is_enabled == 1)
+    {
+        // Step 1: Apply EQ with built-in normalization and clamping
+        apply_eq(&rx_eq, output_speaker, n_samples, 48000.0);
 
-			// Step 2: Optionally apply soft limiting (only if additional smoothing is required)
-			const double limiter_threshold = 0.8 * 500000000; // Lower limiter threshold for headroom
+        // Step 2: Optionally apply soft limiting (only if additional smoothing is required)
+        const double limiter_threshold = 0.8 * 500000000; // Lower limiter threshold for headroom 
 
-			for (int i = 0; i < n_samples; i++)
-			{
-				double sample = output_speaker[i];
+        for (int i = 0; i < n_samples; i++)
+        {
+            double sample = output_speaker[i];
 
-				// Apply smooth limiting if sample exceeds threshold
-				if (fabs(sample) > limiter_threshold)
-				{
-					sample = limiter_threshold * tanh(sample / limiter_threshold);
-				}
+            // Apply smooth limiting if sample exceeds threshold
+            if (fabs(sample) > limiter_threshold)
+            {
+                sample = limiter_threshold * tanh(sample / limiter_threshold);
+            }
 
-				output_speaker[i] = (int32_t)sample;
-			}
-		}
-	}
-
-	// Push the samples to the remote audio queue, decimated to 16000 samples/sec
-	// Moved after EQ processing so qremote gets the equalized audio when applicable
+            output_speaker[i] = (int32_t)sample;
+        }
+    }
+}
+// Push the samples to the remote audio queue, decimated to 16000 samples/sec
+// Moved after EQ processing so qremote gets the equalized audio when applicable
 	if (rx_list->output == 0) {
 		for (i = 0; i < MAX_BINS / 2; i += 6)
 		{
@@ -1582,6 +1602,7 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		}
 	}
 
+#if RX_TX_TIMING_DEBUG
 	clock_gettime(CLOCK_MONOTONIC, &_rF);  // after AGC, modem_rx, EQ/limiter, decimation
 
 	{
@@ -1623,8 +1644,8 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 			section_cnt = 0;
 		}
 	}
+#endif
 }
-
 void read_power()
 {
 	uint8_t response[4];
@@ -1690,12 +1711,13 @@ void tx_process(
 	int n_samples)
 {
   // --- per-call timing instrumentation ---
+#if RX_TX_TIMING_DEBUG
   struct timespec ts_start, ts_end;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
  
-  static long     perf_accum_ns  = 0;   // accumulated nanoseconds
   static int      perf_call_count = 0;  // calls this reporting period
   const  int      PERF_PERIOD    = 94; // report every 94 calls (1 second at 10.6 ms per call)
+#endif
   // end of timing code
  
 	int i;
@@ -1795,10 +1817,11 @@ void tx_process(
 	int j = 0;
  
 	// --- Section timing (temporary diagnostic for Pi Zero 2W) ---
-	// Prints per-section breakdown every ~1 second so you can see which
-	// phase of tx_process() is slow. Remove once the issue is resolved.
+	// Set RX_TX_TIMING_DEBUG to 1 (near rx_linear, above) to re-enable.
+#if RX_TX_TIMING_DEBUG
 	struct timespec _tA, _tB, _tC, _tD;
 	clock_gettime(CLOCK_MONOTONIC, &_tA);
+#endif
 	// --- end section timing preamble ---
  
 	// double max = -10.0, min = 10.0;
@@ -1880,7 +1903,9 @@ void tx_process(
 		q_write(&qremote, output_speaker[i]);
 	}
  
+#if RX_TX_TIMING_DEBUG
 	clock_gettime(CLOCK_MONOTONIC, &_tB);  // after sample generation
+#endif
 	// convert to frequency
 	fftw_execute(plan_fwd);
  
@@ -1937,7 +1962,9 @@ void tx_process(
 	// the spectrum display is updated
 	// spectrum_update();
  
+#if RX_TX_TIMING_DEBUG
 	clock_gettime(CLOCK_MONOTONIC, &_tC);  // after fwd FFT + filter + rotate
+#endif
 	// convert back to time domain
 	fftw_execute(r->plan_rev);
 	int min = 10000000;
@@ -1954,18 +1981,15 @@ void tx_process(
 		// output_tx[i] = 0;
 	}
 	//	printf("min %d, max %d\n", min, max);
+#if RX_TX_TIMING_DEBUG
 	clock_gettime(CLOCK_MONOTONIC, &_tD);  // after rev FFT + output copy
-	{
-		static int _tx_section_cnt = 0;
-		if (++_tx_section_cnt >= 94) {  /* ~1 second at 96kHz/1024 frames */
-			_tx_section_cnt = 0;
-			long us_samples = (_tB.tv_sec-_tA.tv_sec)*1000000L + (_tB.tv_nsec-_tA.tv_nsec)/1000L;
-			long us_fwd_fft = (_tC.tv_sec-_tB.tv_sec)*1000000L + (_tC.tv_nsec-_tB.tv_nsec)/1000L;
-			long us_rev_fft = (_tD.tv_sec-_tC.tv_sec)*1000000L + (_tD.tv_nsec-_tC.tv_nsec)/1000L;
-			fprintf(stderr, "tx_process sections: samples=%ldus  fwd_fft+filter=%ldus  rev_fft+out=%ldus\n",
-			        us_samples, us_fwd_fft, us_rev_fft);
-		}
-	}
+#endif
+	// (old per-call snapshot print removed -- it printed one arbitrary call's
+	//  numbers every ~94 calls rather than an average, which is noisy and
+	//  doesn't show worst-case behavior. Replaced by the accumulated report
+	//  at the end of the function, which also now covers the front-matter
+	//  (mic/EQ/compression/mute + STEP1 copy) and tail (sdr_modulation_update)
+	//  that this snapshot never captured.)
  
 	// read_power() is not called here. On this hardware the Pico 2040 (I2C address
 	// 0x0a) handles SWR/power measurement and sends the data as text via zbitx_poll().
@@ -2065,26 +2089,48 @@ void tx_process(
 	}
 #endif
  
-  // --- timing: accumulate and report ---
+  // --- timing: accumulate and report (per-section + worst-call) ---
+#if RX_TX_TIMING_DEBUG
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
-  perf_accum_ns += (long)(ts_end.tv_sec  - ts_start.tv_sec ) * 1000000000L
-                 + (long)(ts_end.tv_nsec - ts_start.tv_nsec);
-  perf_call_count++;
- 
-  if (perf_call_count >= PERF_PERIOD) {
-    // total wall-clock nanoseconds for the window
-    long total_ns   = perf_accum_ns;
-    long avg_ns     = total_ns / PERF_PERIOD;
-    // % of a 1-second budget consumed
-    double pct_cpu  = (double)total_ns / 1e9 * 100.0;
- 
-    fprintf(stderr,
-      "[tx_process] total=%ld us  avg=%ld ns/call  cpu=%.2f%%\n",
-      total_ns / 1000, avg_ns, pct_cpu);
- 
-    perf_accum_ns  = 0;
-    perf_call_count = 0;
+
+  {
+    static long accum_front = 0, accum_gather = 0, accum_fwd_fft = 0;
+    static long accum_rev_fft = 0, accum_tail = 0, accum_total = 0;
+    static long max_us_seen = 0;
+
+    long us_front   = (_tA.tv_sec-ts_start.tv_sec)*1000000L + (_tA.tv_nsec-ts_start.tv_nsec)/1000L;
+    long us_gather  = (_tB.tv_sec-_tA.tv_sec)*1000000L      + (_tB.tv_nsec-_tA.tv_nsec)/1000L;
+    long us_fwd_fft = (_tC.tv_sec-_tB.tv_sec)*1000000L      + (_tC.tv_nsec-_tB.tv_nsec)/1000L;
+    long us_rev_fft = (_tD.tv_sec-_tC.tv_sec)*1000000L      + (_tD.tv_nsec-_tC.tv_nsec)/1000L;
+    long us_tail    = (ts_end.tv_sec-_tD.tv_sec)*1000000L   + (ts_end.tv_nsec-_tD.tv_nsec)/1000L;
+    long us_total   = us_front + us_gather + us_fwd_fft + us_rev_fft + us_tail;
+
+    accum_front   += us_front;
+    accum_gather  += us_gather;
+    accum_fwd_fft += us_fwd_fft;
+    accum_rev_fft += us_rev_fft;
+    accum_tail    += us_tail;
+    accum_total   += us_total;
+    if (us_total > max_us_seen) max_us_seen = us_total;
+
+    perf_call_count++;
+
+    if (perf_call_count >= PERF_PERIOD) {
+      double pct_cpu = (double)accum_total / 1e6 * 100.0;
+
+      fprintf(stderr,
+        "[tx_process] total=%ldus (cpu=%.2f%%)  worst_call=%ldus  front=%ldus  gather=%ldus  "
+        "fwd_fft+filter=%ldus  rev_fft+out=%ldus  tail=%ldus\n",
+        accum_total, pct_cpu, max_us_seen, accum_front, accum_gather,
+        accum_fwd_fft, accum_rev_fft, accum_tail);
+
+      accum_front = accum_gather = accum_fwd_fft = 0;
+      accum_rev_fft = accum_tail = accum_total = 0;
+      max_us_seen = 0;
+      perf_call_count = 0;
+    }
   }
+#endif
   // end of timing code
 }
 
