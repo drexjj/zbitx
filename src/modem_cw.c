@@ -470,10 +470,11 @@ float cw_tx_get_sample() {
   float sample = 0;
   uint8_t state_machine_mode;
   static uint8_t symbol_now = CW_IDLE;
+	
   static int pitch_poll_counter = 0;
   if ((keydown_count == 0) && (keyup_count == 0)) {
     millis_now = millis();
-    if (++pitch_poll_counter >= 10000) {   // ~100ms at 96kHz -- plenty responsive for a pitch control
+    if (++pitch_poll_counter >= 2000) {   // ~20ms at 96kHz -- plenty responsive for a pitch control
         pitch_poll_counter = 0;
         cached_pitch = get_pitch();
     }
