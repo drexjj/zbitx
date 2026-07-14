@@ -469,12 +469,16 @@ float cw_tx_get_sample() {
   uint8_t state_machine_mode;
   static uint8_t symbol_now = CW_IDLE;
   
+  static int cached_pitch = 0;
+  static int pitch_poll_counter = 0;
   if ((keydown_count == 0) && (keyup_count == 0)) {
-    // note current time to use with UI value of CW_DELAY to control break-in
     millis_now = millis();
-    // set CW pitch if needed
-    if (cw_tone.freq_hz != get_pitch())
-      vfo_start( &cw_tone, get_pitch(), 0);
+    if (++pitch_poll_counter >= 10000) {   // ~100ms at 96kHz -- plenty responsive for a pitch control
+        pitch_poll_counter = 0;
+        cached_pitch = get_pitch();
+    }
+    if (cw_tone.freq_hz != cached_pitch)
+      vfo_start( &cw_tone, cached_pitch, 0);
   }
   
   // check to see if input available from macro or keyboard
