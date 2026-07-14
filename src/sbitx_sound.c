@@ -169,6 +169,20 @@ pthread_t sound_thread, loopback_thread;
 
 static long int last_loopback_reset = 0;		//time interval of last loopback play reset - n1qm
 static int reset_loopback_interval = 300;  		// Seconds to reset loopback device
+// loopback_play_handle is written to every ~10ms by sound_thread (the
+// real-time audio thread). snd_pcm_t is not thread-safe for concurrent
+// calls on the same handle without external locking, and sound_reset()
+// used to call snd_pcm_reset(loopback_play_handle) directly from whatever
+// thread called it -- tx_on() on the GTK thread (every key-down/PTT) and
+// loopback_thread's own periodic timer. That's an unsynchronized cross
+// -thread race on the same ALSA handle sound_thread is actively writing
+// to, and was causing ALSA underruns both at TX transitions and at
+// scattered, unpredictable points during ordinary RX. Rather than add a
+// mutex (which risks priority inversion between the SCHED_OTHER GTK
+// thread and the SCHED_FIFO audio thread), other threads now just raise
+// this flag; only sound_thread ever calls snd_pcm_reset() on the handle,
+// from its own loop. See chat history.
+static volatile int loopback_reset_requested = 0;
 
 #define LOOPBACK_LEVEL_DIVISOR 8				// Constant used to reduce audio level to the loopback channel (FLDIGI)
 static int pcm_capture_error = 0;				// count pcm capture errors
@@ -652,7 +666,9 @@ void sound_reset(int force){
 	if (force !=1 && ltv - reset_loopback_interval < last_loopback_reset)
 		return;
 	
-	snd_pcm_reset(loopback_play_handle);
+	// Don't touch loopback_play_handle from this thread -- just ask
+	// sound_thread to do it. See comment at loopback_reset_requested.
+	loopback_reset_requested = 1;
 
 	last_loopback_reset = ltv;
 #if DEBUG > 0
@@ -732,6 +748,14 @@ int sound_loop(){
 // ******************************************************************************************************** The Big Loop starts here
 
   while(sound_thread_continue) {
+
+		// Perform any pending loopback reset here -- only this thread
+		// (sound_thread) ever touches loopback_play_handle directly.
+		// See comment at loopback_reset_requested.
+		if (loopback_reset_requested) {
+			loopback_reset_requested = 0;
+			snd_pcm_reset(loopback_play_handle);
+		}
 
 		//restart the pcm capture if there is an error reading the samples
 		//this is opened as a blocking device, hence we derive accurate timing 
@@ -959,24 +983,59 @@ while ((pcmreturn = snd_pcm_readi(pcm_capture_handle, data_in, frames)) < 0)
 
 
 	// This is the new pcm loopback write routine
+	// NON-BLOCKING / BEST-EFFORT: this runs inside the primary SCHED_FIFO
+	// audio thread (sound_thread), same thread that does capture read,
+	// rx_linear/tx_process, and the real playback write above. The old
+	// version spin-waited here -- "do { avail... } while (avail == 0)"
+	// and "do { writei... } while (writei == -EAGAIN)" -- until the
+	// loopback/virtual-cable device (read by fldigi/WSJT-X/etc, if
+	// anything) had room. If that consumer was slow, paused, or not
+	// running, this could block the real-time audio thread indefinitely
+	// while the actual hardware capture device kept filling up in the
+	// background -- showing up as "capture backlog: dropped N frames to
+	// resync" and ALSA underruns with no correlation to rx_linear's own
+	// CPU cost. The loopback output is best-effort/secondary, so now we
+	// try once per period and just drop whatever doesn't fit rather than
+	// waiting for the consumer to catch up. See chat history.
 	framesize = (ret_card + 1) /2;		// only writing half the number of samples because of the slower channel rate
 	offset = 0;
 
 	while(framesize > 0)
 	{
-		do
+		pcmreturn = snd_pcm_avail(loopback_play_handle);
+
+		if (pcmreturn == -11)   // -EAGAIN
+			pcmreturn = 0;   // treat "try again" as "no room right now", not an error
+
+		if (pcmreturn < 0)
 		{
-			pcmreturn = snd_pcm_avail(loopback_play_handle);
-		} while ((pcmreturn == 0) || (pcmreturn == -11));
-				
+			// a real error, not just "not ready yet" -- recover and give up
+			// on this period's loopback samples instead of looping on it
+#if DEBUG > 0
+			printf("Loopback PCM Avail Error %d: %s\n", pcmreturn, snd_strerror(pcmreturn));
+#endif
+#if DEBUG <2
+			snd_pcm_recover(loopback_play_handle, pcmreturn, 1);
+#else
+			snd_pcm_recover(loopback_play_handle, pcmreturn, 0);
+#endif
+			break;
+		}
+
+		if (pcmreturn == 0)
+		{
+			// consumer isn't draining -- drop the rest of this period's
+			// loopback samples rather than blocking the real-time thread
+			break;
+		}
+
 	//	printf("Writing %d frame to loopback\n", framesize);
-	
-		do
-		{	
-			pcmreturn = snd_pcm_writei(loopback_play_handle, line_out + offset, framesize);
-		} while (pcmreturn == -11);
-		
-		// if((pcmreturn < 0) && (pcmreturn != -11))	// also ignore "temporarily unavailable" errors
+
+		pcmreturn = snd_pcm_writei(loopback_play_handle, line_out + offset, framesize);
+
+		if (pcmreturn == -11)   // -EAGAIN
+			break;   // try again next period instead of spin-waiting here
+
 		if(pcmreturn < 0)
 		{  	// Handle an error condition from the snd_pcm_writei function
 #if DEBUG > 0			
@@ -989,6 +1048,7 @@ while ((pcmreturn = snd_pcm_readi(pcm_capture_handle, data_in, frames)) < 0)
 #else
 			snd_pcm_recover(loopback_play_handle, pcmreturn, 0);		// Provides detailed error message
 #endif				
+			break;
 		}
 		
 		if(pcmreturn >= 0)
