@@ -1141,8 +1141,20 @@ void *sound_thread_function(void *ptr){
 void *loopback_thread_function(void *ptr){
 	struct sched_param sch;
 
-	//switch to maximum priority
-	sch.sched_priority = sched_get_priority_max(SCHED_FIFO);
+	// This thread used to run at the same SCHED_FIFO max priority as
+	// sound_thread (the main RX/TX audio thread). Two SCHED_FIFO threads
+	// at equal priority don't preempt each other -- whichever is running
+	// keeps the CPU until it blocks or yields. On a single core that let
+	// loopback work (buffer copies, format conversion, the periodic
+	// sound_reset() call) stall the real-time audio thread for however
+	// long it ran, causing ALSA underruns even at low average CPU load.
+	// Same root cause as the GTK/audio priority collision fixed above --
+	// see sbitx_gtk.c. Keep this thread real-time (so ordinary SCHED_OTHER
+	// processes can't starve it) but strictly below sound_thread's
+	// priority so sound_thread always preempts it immediately.
+	int max_prio = sched_get_priority_max(SCHED_FIFO);
+	int min_prio = sched_get_priority_min(SCHED_FIFO);
+	sch.sched_priority = (max_prio - 1 >= min_prio) ? (max_prio - 1) : min_prio;
 	pthread_setschedparam(loopback_thread, SCHED_FIFO, &sch);
 //	printf("loopback thread is %x\n", loopback_thread);
 //  printf("opening loopback on plughw:1,0 sound card\n");	
