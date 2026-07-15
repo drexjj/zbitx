@@ -6685,6 +6685,23 @@ void zbitx_poll(int all){
 	char buff[3000];
 	static unsigned int last_update = 0;
 
+	// --- Timing instrumentation: is zbitx_poll() itself a source of the
+	// ~once/sec, ~25-30ms audio-thread stalls seen via sound_loop's
+	// "loop period long" warning? This runs on the GTK thread and does
+	// bit-banged I2C (CPU-spinning busy-waits, not sleeps) for every
+	// changed field, potentially with retries. It no longer shares a lock
+	// with the audio thread (read_power() -- the old audio-side i2cbb
+	// caller -- is dead code on this hardware), but the busy-spinning
+	// could still be stealing CPU cycles from the audio thread's core.
+	// Reports only when this call takes long enough to matter, rate
+	// limited to ~1/sec so the print itself can't skew the measurement.
+	struct timespec _zp_t0, _zp_t1;
+	clock_gettime(CLOCK_MONOTONIC, &_zp_t0);
+	static struct timespec _zp_epoch;
+	static int _zp_have_epoch = 0;
+	if (!_zp_have_epoch) { _zp_epoch = _zp_t0; _zp_have_epoch = 1; }
+	// --- end timing preamble ---
+
 	int count = 0;
 	int e = 0;
 	int retry;
@@ -6769,6 +6786,27 @@ void zbitx_poll(int all){
 		}
 	}
 	last_update = this_time;
+
+	clock_gettime(CLOCK_MONOTONIC, &_zp_t1);
+	long _zp_us = (_zp_t1.tv_sec - _zp_t0.tv_sec) * 1000000L
+	            + (_zp_t1.tv_nsec - _zp_t0.tv_nsec) / 1000L;
+	if (_zp_us > 2000) {  // only care about calls over 2ms
+		static struct timespec _zpwarn_last;
+		static int _zpwarn_have_last = 0;
+		long _since_last_us = 1000001;
+		if (_zpwarn_have_last) {
+			_since_last_us = (_zp_t1.tv_sec  - _zpwarn_last.tv_sec)  * 1000000L
+			                + (_zp_t1.tv_nsec - _zpwarn_last.tv_nsec) / 1000L;
+		}
+		if (_since_last_us >= 1000000) {
+			double _t_since_start = (_zp_t1.tv_sec - _zp_epoch.tv_sec)
+			                       + (_zp_t1.tv_nsec - _zp_epoch.tv_nsec) / 1e9;
+			fprintf(stderr, "t=%.2fs zbitx_poll: %ldus (fields_sent=%d)\n",
+			        _t_since_start, _zp_us, count);
+			_zpwarn_last = _zp_t1;
+			_zpwarn_have_last = 1;
+		}
+	}
 }
 
 void zbitx_init(){
