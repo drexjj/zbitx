@@ -181,7 +181,7 @@ static int reset_loopback_interval = 300;  		// Seconds to reset loopback device
 // mutex (which risks priority inversion between the SCHED_OTHER GTK
 // thread and the SCHED_FIFO audio thread), other threads now just raise
 // this flag; only sound_thread ever calls snd_pcm_reset() on the handle,
-// from its own loop. See chat history.
+// from its own loop.
 static volatile int loopback_reset_requested = 0;
 
 #define LOOPBACK_LEVEL_DIVISOR 8				// Constant used to reduce audio level to the loopback channel (FLDIGI)
@@ -372,7 +372,7 @@ int sound_start_loopback_capture(char *device){
 	}
 
 	// BUG FIX: same period/buffer-size mixup as sound_start_capture() and
-	// sound_start_play() -- see explanation there.
+	// sound_start_play()
 	if ((e = snd_pcm_hw_params_set_periods(loopback_capture_handle, hloop_params, n_periods_per_buffer, 0)) < 0) {
 		fprintf(stderr, "*Error setting loopback capture periods.\n");
 		return(-1);
@@ -1072,7 +1072,7 @@ if (_loop_period_us > 15000) {
 	// resync" and ALSA underruns with no correlation to rx_linear's own
 	// CPU cost. The loopback output is best-effort/secondary, so now we
 	// try once per period and just drop whatever doesn't fit rather than
-	// waiting for the consumer to catch up. See chat history.
+	// waiting for the consumer to catch up.
 	framesize = (ret_card + 1) /2;		// only writing half the number of samples because of the slower channel rate
 	offset = 0;
 	long _loop_writei_total_us = 0;
