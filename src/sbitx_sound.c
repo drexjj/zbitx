@@ -274,34 +274,18 @@ int sound_start_play(char *device){
 		return(-1);
 	}
 
-/*
-// This function call and the next have been replaced by the snd_pcm_hw_params_set_period_size_near() function call - N3SB December 2023
-	// frame = bytes_per_sample x n_channel
-	// period = frames transfered at a time (160 for voip, etc.)
-	// we use two periods per buffer.
+
+	// BUG FIX: see the matching fix + explanation in sound_start_capture().
+	// Same mistake here -- period size was being set to the *buffer*-size
+	// formula instead of one period.
 	if ((e = snd_pcm_hw_params_set_periods(pcm_play_handle, hwparams, n_periods_per_buffer, 0)) < 0) {
 		fprintf(stderr, "*Error setting playback periods.\n");
 		return(-1);
 	}
-*/
-
-	// the buffer size is each periodsize x n_periods
-	//	snd_pcm_uframes_t  n_frames= (buff_size  * n_periods_per_buffer)/8;
-	//A larger buffer seems to hurt performance, reset to 'normal'
-	//If a large pop occurs increase this by four (*4)
-	snd_pcm_uframes_t  n_frames= (buff_size  * n_periods_per_buffer)/8;		
+	snd_pcm_uframes_t  n_frames = buff_size / 8;
 #if DEBUG > 0	
-	printf("trying for buffer size of %ld\n", n_frames);
+	printf("trying for period size of %ld\n", n_frames);
 #endif
-/*
-// This function call and the previous have been replaced by the snd_pcm_hw_params_set_period_size_near() function call - N3SB December 2023
-	e = snd_pcm_hw_params_set_buffer_size_near(pcm_play_handle, hwparams, &n_frames);
-	if (e < 0) {
-		    fprintf(stderr, "*Error setting playback buffersize.\n");
-		    return(-1);
-	}
-*/
-	// This function call replaces the two function calls above - N3SB December 2023
 	e = snd_pcm_hw_params_set_period_size_near(pcm_play_handle, hwparams, &n_frames, 0);
 	if (e < 0) {
 		    fprintf(stderr, "*Error setting playback buffersize.\n");
@@ -387,25 +371,13 @@ int sound_start_loopback_capture(char *device){
 		return(-1);
 	}
 
-/*
-	//printf("%d: set the #channels\n", __LINE__, 2);
-	// Set number of periods. Periods used to be called fragments.
+	// BUG FIX: same period/buffer-size mixup as sound_start_capture() and
+	// sound_start_play() -- see explanation there.
 	if ((e = snd_pcm_hw_params_set_periods(loopback_capture_handle, hloop_params, n_periods_per_buffer, 0)) < 0) {
 		fprintf(stderr, "*Error setting loopback capture periods.\n");
 		return(-1);
 	}
-
-	// the buffer size is each periodsize x n_periods
-	snd_pcm_uframes_t  n_frames= (buff_size  * n_periods_per_buffer) / 8;
-	// printf("trying for buffer size of %ld\n", n_frames);
-	e = snd_pcm_hw_params_set_buffer_size_near(loopback_capture_handle, hloop_params, &n_frames);
-	if (e < 0) {
-		    fprintf(stderr, "*Error setting loopback capture buffersize.\n");
-		    return(-1);
-	}
-*/
-	// This function call and the previous have been replaced by the snd_pcm_hw_params_set_period_size_near() function call - N3SB December 2023
-	snd_pcm_uframes_t  n_frames= (buff_size  * n_periods_per_buffer) / 8;
+	snd_pcm_uframes_t  n_frames = buff_size / 8;
 	e = snd_pcm_hw_params_set_period_size_near(loopback_capture_handle, hloop_params, &n_frames, 0);
 	if (e < 0) {
 		    fprintf(stderr, "*Error setting loopback capture buffersize.\n");
@@ -502,24 +474,23 @@ int sound_start_capture(char *device){
 		return(-1);
 	}
 
-/*
-	// Set number of periods. Periods used to be called fragments.
+	// BUG FIX: this used to reuse the *buffer*-size formula
+	// ((buff_size * n_periods_per_buffer)/8) as the *period* size, which told
+	// ALSA each period was n_periods_per_buffer times too big. Since
+	// sound_loop() only ever requests `frames = buff_size/8` per
+	// snd_pcm_readi() call, but the actual configured period was 4x that,
+	// every blocking read had to wait for a full (4x too large) period to
+	// fill before returning any data at all -- confirmed via kernel
+	// scheduler tracing showing sound_thread genuinely sleeping ~4x longer
+	// than expected, every single cycle, with the CPU otherwise idle. Not a
+	// scheduling/priority/interrupt problem -- a period-size configuration
+	// bug. Fix: period size is ONE period (buff_size/8); periods count is
+	// set separately so the total buffer depth is unchanged.
 	if ((e = snd_pcm_hw_params_set_periods(pcm_capture_handle, hwparams, n_periods_per_buffer, 0)) < 0) {
 		fprintf(stderr, "*Error setting capture periods.\n");
 		return(-1);
 	}
-
-	// the buffer size is each periodsize x n_periods
-	snd_pcm_uframes_t  n_frames= (buff_size  * n_periods_per_buffer)/ 8;
-	//printf("trying for buffer size of %ld\n", n_frames);
-	e = snd_pcm_hw_params_set_buffer_size_near(pcm_capture_handle, hwparams, &n_frames);
-	if (e < 0) {
-		    fprintf(stderr, "*Error setting PCM capture buffersize.\n");
-		    return(-1);
-	}
-*/
-	snd_pcm_uframes_t  n_frames= (buff_size  * n_periods_per_buffer)/ 8;
-	// This function call replaces the two function calls above - N3SB December 2023
+	snd_pcm_uframes_t  n_frames = buff_size / 8;
 	e = snd_pcm_hw_params_set_period_size_near(pcm_capture_handle, hwparams, &n_frames, 0);
 	if (e < 0) {
 		    fprintf(stderr, "*Error setting PCM Capture buffersize.\n");
@@ -593,30 +564,16 @@ int sound_start_loopback_play(char *device){
 		return(-1);
 	}
 
-/*
-	// frame = bytes_per_sample x n_channel
-	// period = frames transfered at a time (160 for voip, etc.)
-	// we use two periods per buffer.
+	// BUG FIX: same period/buffer-size mixup as the other three device
+	// setups -- see explanation in sound_start_capture(). This one was
+	// worse: it also multiplied by 4 *again* on top of the wrong formula,
+	// landing on a period 16x too large. Restored the original 8-periods
+	// intent and set period size to one true period.
 	if ((e = snd_pcm_hw_params_set_periods(loopback_play_handle, hwparams, 8, 0)) < 0) {
 		fprintf(stderr, "*Error setting playback periods.\n");
 		return(-1);
 	}
-
-	// the buffer size is each periodsize x n_periods
-	snd_pcm_uframes_t  n_frames= (buff_size  * n_periods_per_buffer)/8;
-	//lets pump it up to see if we can reduce the dropped frames
-	n_frames *= 4;
-	//printf("trying for loopback buffer size of %ld\n", n_frames);
-	e = snd_pcm_hw_params_set_buffer_size_near(loopback_play_handle, hwparams, &n_frames);
-	if (e < 0) {
-		    fprintf(stderr, "*Error setting loopback playback buffersize.\n");
-		    return(-1);
-	}
-*/
-	// This function call replaces the two function calls above - N3SB December 2023
-	snd_pcm_uframes_t  n_frames= (buff_size  * n_periods_per_buffer)/8;
-	//lets pump it up to see if we can reduce the dropped frames
-	n_frames *= 4;	
+	snd_pcm_uframes_t  n_frames = buff_size / 8;
 	e = snd_pcm_hw_params_set_period_size_near(loopback_play_handle, hwparams, &n_frames, 0);
 	if (e < 0) {
 		    fprintf(stderr, "*Error setting loopback play buffersize.\n");
@@ -749,6 +706,38 @@ int sound_loop(){
 
   while(sound_thread_continue) {
 
+		// --- Loop-period / capture-read timing (always on, cheap; only logs
+		// on overrun so it won't spam under normal operation). This measures
+		// the one thing rx_linear/tx_process instrumentation can't see:
+		// whether the blocking snd_pcm_readi() capture call itself is coming
+		// back on schedule. A delay here shows near-zero CPU (thread is
+		// blocked, not spinning), so it's invisible to top and unaffected by
+		// generic scheduling-latency tools -- but it directly produces the
+		// "capture backlog"/underrun symptom with no corresponding spike in
+		// rx_linear's/tx_process's own worst_call.
+		static struct timespec _loop_prev_top;
+		static int _loop_have_prev = 0;
+		static long _prev_real_writei_us = 0;
+		static long _prev_loop_writei_us = 0;
+		static struct timespec _sound_loop_epoch;
+		static int _sound_loop_have_epoch = 0;
+		struct timespec _loop_top;
+		clock_gettime(CLOCK_MONOTONIC, &_loop_top);
+		if (!_sound_loop_have_epoch) {
+			_sound_loop_epoch = _loop_top;
+			_sound_loop_have_epoch = 1;
+		}
+		double _t_since_start_s = (_loop_top.tv_sec - _sound_loop_epoch.tv_sec)
+		                         + (_loop_top.tv_nsec - _sound_loop_epoch.tv_nsec) / 1e9;
+		long _loop_period_us = 0;
+		if (_loop_have_prev) {
+			_loop_period_us = (_loop_top.tv_sec  - _loop_prev_top.tv_sec)  * 1000000L
+			                 + (_loop_top.tv_nsec - _loop_prev_top.tv_nsec) / 1000L;
+		}
+		_loop_prev_top = _loop_top;
+		_loop_have_prev = 1;
+		// --- end loop-period preamble ---
+
 		// Perform any pending loopback reset here -- only this thread
 		// (sound_thread) ever touches loopback_play_handle directly.
 		// See comment at loopback_reset_requested.
@@ -778,6 +767,9 @@ int sound_loop(){
 #endif
 		
 // Drain any accumulated capture backlog before reading.
+struct timespec _drain_t0, _drain_t1;
+clock_gettime(CLOCK_MONOTONIC, &_drain_t0);
+int _backlog_dropped = 0;
 {
     snd_pcm_sframes_t avail = snd_pcm_avail_update(pcm_capture_handle);
     
@@ -790,14 +782,53 @@ int sound_loop(){
             // Use snd_pcm_forward to safely advance the read pointer
             snd_pcm_sframes_t forwarded = snd_pcm_forward(pcm_capture_handle, to_drop);
             if (forwarded > 0) {
+                _backlog_dropped = (int)forwarded;
                 fprintf(stderr, "capture backlog: dropped %ld frames to resync\n", forwarded);
             }
         }
     }
 }
+clock_gettime(CLOCK_MONOTONIC, &_drain_t1);
+
+struct timespec _readi_t0, _readi_t1;
+clock_gettime(CLOCK_MONOTONIC, &_readi_t0);
 while ((pcmreturn = snd_pcm_readi(pcm_capture_handle, data_in, frames)) < 0)
 {
     result = snd_pcm_prepare(pcm_capture_handle);
+}
+clock_gettime(CLOCK_MONOTONIC, &_readi_t1);
+
+// Report if this iteration ran meaningfully over budget (period is ~10667us
+// at 96kHz/1024 frames; warn past ~15000us to avoid noise from ordinary jitter).
+// Rate-limited to at most once/second: fprintf() to a live console can itself
+// cost single-digit-to-tens of milliseconds, and since this loop body runs
+// again immediately after, an unthrottled print here can inflate the NEXT
+// iteration's measured period enough to re-trip this same warning -- a
+// self-feeding cascade that looks like a constant stall but is actually the
+// logging itself. Rate-limiting to ~1/sec keeps the print volume low enough
+// that its own cost can't dominate, the same way the section-timing reports
+// above are already throttled to 1/sec.
+static struct timespec _loopwarn_last;
+static int _loopwarn_have_last = 0;
+if (_loop_period_us > 15000) {
+    long _since_last_us = 1000001; // force first warning through
+    if (_loopwarn_have_last) {
+        _since_last_us = (_loop_top.tv_sec  - _loopwarn_last.tv_sec)  * 1000000L
+                        + (_loop_top.tv_nsec - _loopwarn_last.tv_nsec) / 1000L;
+    }
+    if (_since_last_us >= 1000000) {
+        long _drain_us = (_drain_t1.tv_sec - _drain_t0.tv_sec) * 1000000L
+                        + (_drain_t1.tv_nsec - _drain_t0.tv_nsec) / 1000L;
+        long _readi_us  = (_readi_t1.tv_sec - _readi_t0.tv_sec) * 1000000L
+                        + (_readi_t1.tv_nsec - _readi_t0.tv_nsec) / 1000L;
+        fprintf(stderr,
+            "t=%.2fs loop period long: %ldus (budget ~10667us)  drain=%ldus  readi=%ldus  "
+            "real_writei=%ldus  loop_writei=%ldus  dropped=%d\n",
+            _t_since_start_s, _loop_period_us, _drain_us, _readi_us,
+            _prev_real_writei_us, _prev_loop_writei_us, _backlog_dropped);
+        _loopwarn_last = _loop_top;
+        _loopwarn_have_last = 1;
+    }
 }
 #if DEBUG > 1		
 		printf("Delta Time: %d, Available output sample storage: %d\n", delta_time, snd_pcm_avail(pcm_play_handle));
@@ -890,18 +921,63 @@ while ((pcmreturn = snd_pcm_readi(pcm_capture_handle, data_in, frames)) < 0)
 	int offset = 0;
 	int play_write_errors = 0;
 	int pswitch = 0;
+	long _real_writei_total_us = 0;
 		
 	while(framesize > 0)
 	{
+		// Timed spin-wait: measures how long we actually wait for the real
+		// playback device to have room. This loop is unbounded by design
+		// (see loop below), so if the hardware playback path ever stalls
+		// (codec/driver hiccup, etc.) this thread spins here instead of
+		// reading the next capture period -- a plausible source of
+		// underruns that wouldn't show up as CPU contention from any other
+		// process, since it's this thread busy-waiting on itself. Always
+		// on (not gated by RX_TX_TIMING_DEBUG) since it's two clock_gettime
+		// calls and a comparison, only when we actually had to wait.
+		struct timespec _pw0, _pw1;
+		int _pw_spun = 0;
+		clock_gettime(CLOCK_MONOTONIC, &_pw0);
+
 		do
 		{
 			pcmreturn = snd_pcm_avail(pcm_play_handle);
+			if (pcmreturn == 0 || pcmreturn == -11) _pw_spun = 1;
 		} while ((pcmreturn == 0) || (pcmreturn == -11));
-		
+
+		if (_pw_spun) {
+			clock_gettime(CLOCK_MONOTONIC, &_pw1);
+			long _pw_us = (_pw1.tv_sec - _pw0.tv_sec) * 1000000L
+			            + (_pw1.tv_nsec - _pw0.tv_nsec) / 1000L;
+			if (_pw_us > 1000) {  // only consider spins over 1ms, to avoid spamming on routine short waits
+				// Rate-limited to ~1/sec, same reasoning as the loop-period
+				// warning above: an unthrottled fprintf() here could in
+				// principle inflate the next iteration's own timing and
+				// mask what it's trying to measure.
+				static struct timespec _pwwarn_last;
+				static int _pwwarn_have_last = 0;
+				long _since_last_us = 1000001;
+				if (_pwwarn_have_last) {
+					_since_last_us = (_pw1.tv_sec  - _pwwarn_last.tv_sec)  * 1000000L
+					                + (_pw1.tv_nsec - _pwwarn_last.tv_nsec) / 1000L;
+				}
+				if (_since_last_us >= 1000000) {
+					fprintf(stderr, "play_avail spin-wait: %ld us (frames=%d)\n", _pw_us, framesize);
+					_pwwarn_last = _pw1;
+					_pwwarn_have_last = 1;
+				}
+			}
+		}
+
+		struct timespec _wr0, _wr1;
+		clock_gettime(CLOCK_MONOTONIC, &_wr0);
 		do
 		{
 			pcmreturn = snd_pcm_writei(pcm_play_handle, data_out + offset, framesize);
 		} while (pcmreturn == -11);
+		clock_gettime(CLOCK_MONOTONIC, &_wr1);
+		long _real_writei_us = (_wr1.tv_sec - _wr0.tv_sec) * 1000000L
+		                      + (_wr1.tv_nsec - _wr0.tv_nsec) / 1000L;
+		_real_writei_total_us += _real_writei_us;
 #if DEBUG > 0		
 		if ((pcmreturn > 0) && (pcmreturn < 1024))
 		{
@@ -999,6 +1075,7 @@ while ((pcmreturn = snd_pcm_readi(pcm_capture_handle, data_in, frames)) < 0)
 	// waiting for the consumer to catch up. See chat history.
 	framesize = (ret_card + 1) /2;		// only writing half the number of samples because of the slower channel rate
 	offset = 0;
+	long _loop_writei_total_us = 0;
 
 	while(framesize > 0)
 	{
@@ -1031,7 +1108,12 @@ while ((pcmreturn = snd_pcm_readi(pcm_capture_handle, data_in, frames)) < 0)
 
 	//	printf("Writing %d frame to loopback\n", framesize);
 
+		struct timespec _lwr0, _lwr1;
+		clock_gettime(CLOCK_MONOTONIC, &_lwr0);
 		pcmreturn = snd_pcm_writei(loopback_play_handle, line_out + offset, framesize);
+		clock_gettime(CLOCK_MONOTONIC, &_lwr1);
+		_loop_writei_total_us += (_lwr1.tv_sec - _lwr0.tv_sec) * 1000000L
+		                       + (_lwr1.tv_nsec - _lwr0.tv_nsec) / 1000L;
 
 		if (pcmreturn == -11)   // -EAGAIN
 			break;   // try again next period instead of spin-waiting here
@@ -1074,6 +1156,14 @@ while ((pcmreturn = snd_pcm_readi(pcm_capture_handle, data_in, frames)) < 0)
 #if DEBUG > 0
 	loop_counter++;		
 #endif
+	// Carry this iteration's write-call durations forward: the "loop period
+	// long" warning is measured/printed near the TOP of the *next* iteration
+	// (it reports the gap since the previous top), so by the time we print it
+	// this iteration's own write timings haven't happened yet. Stash them
+	// here so next iteration's warning can report what actually happened
+	// during the period it's describing.
+	_prev_real_writei_us = _real_writei_total_us;
+	_prev_loop_writei_us = _loop_writei_total_us;
   } // End of while (sound_thread_continue) loop
 	//fclose(pf);
   printf("********Ending sound thread\n");
@@ -1145,7 +1235,16 @@ void *sound_thread_function(void *ptr){
 
 	//switch to maximum priority
 	sch.sched_priority = sched_get_priority_max(SCHED_FIFO);
-	pthread_setschedparam(sound_thread, SCHED_FIFO, &sch);
+	int _sched_result = pthread_setschedparam(sound_thread, SCHED_FIFO, &sch);
+	if (_sched_result != 0) {
+		fprintf(stderr,
+			"WARNING: failed to set audio thread to SCHED_FIFO (%s). "
+			"This thread needs real-time scheduling to avoid underruns -- "
+			"run as root, or grant CAP_SYS_NICE / an rtprio limit to this "
+			"binary/user. Falling back to normal scheduling, which WILL be "
+			"less reliable for real-time audio.\n",
+			strerror(_sched_result));
+	}
 
 // Open the PCM Capture Device
 	int i = 0;
@@ -1215,7 +1314,13 @@ void *loopback_thread_function(void *ptr){
 	int max_prio = sched_get_priority_max(SCHED_FIFO);
 	int min_prio = sched_get_priority_min(SCHED_FIFO);
 	sch.sched_priority = (max_prio - 1 >= min_prio) ? (max_prio - 1) : min_prio;
-	pthread_setschedparam(loopback_thread, SCHED_FIFO, &sch);
+	int _lb_sched_result = pthread_setschedparam(loopback_thread, SCHED_FIFO, &sch);
+	if (_lb_sched_result != 0) {
+		fprintf(stderr,
+			"WARNING: failed to set loopback thread to SCHED_FIFO (%s). "
+			"Falling back to normal scheduling.\n",
+			strerror(_lb_sched_result));
+	}
 //	printf("loopback thread is %x\n", loopback_thread);
 //  printf("opening loopback on plughw:1,0 sound card\n");	
 
