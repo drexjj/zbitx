@@ -1197,6 +1197,21 @@ int calculate_zero_beat(struct rx *r, double sampling_rate) {
 // breakdown again -- see chat history for how to read the output.
 #define RX_TX_TIMING_DEBUG 0
 
+#if RX_TX_TIMING_DEBUG
+// Shared wall-clock reference so rx_linear's and tx_process's periodic
+// reports (and sbitx_sound.c's loop-period warning) can be lined up
+// directly by elapsed real time, instead of inferring cadence indirectly.
+static double _rxtx_elapsed_seconds(void)
+{
+	static struct timespec epoch;
+	static int have_epoch = 0;
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (!have_epoch) { epoch = now; have_epoch = 1; }
+	return (now.tv_sec - epoch.tv_sec) + (now.tv_nsec - epoch.tv_nsec) / 1e9;
+}
+#endif
+
 // rx_linear with Spectral Subtraction and Wiener Filter DSP filtering - W2JON
 void rx_linear(int32_t *input_rx, int32_t *input_mic,
 			   int32_t *output_speaker, int32_t *output_tx, int n_samples)
@@ -1634,9 +1649,9 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		if (section_cnt >= 94) {  // ~1 second at 96kHz/1024 frames
 			double pct = 100.0 * accum_total / 1e6;
 			fprintf(stderr,
-				"[rx_linear] total=%ldus (cpu=%.2f%%)  worst_call=%ldus  gather=%ldus  fwd_fft=%ldus  "
+				"t=%.2fs [rx_linear] total=%ldus (cpu=%.2f%%)  worst_call=%ldus  gather=%ldus  fwd_fft=%ldus  "
 				"spectrum=%ldus  dsp=%ldus  sb_fir=%ldus  rev_fft=%ldus  tail=%ldus\n",
-				accum_total, pct, max_us_seen, accum_gather, accum_fwd_fft,
+				_rxtx_elapsed_seconds(), accum_total, pct, max_us_seen, accum_gather, accum_fwd_fft,
 				accum_spectrum, accum_dsp, accum_sb_fir, accum_rev_fft, accum_tail);
 			accum_gather = accum_fwd_fft = accum_spectrum = accum_dsp = 0;
 			accum_sb_fir = accum_rev_fft = accum_tail = accum_total = 0;
@@ -2119,9 +2134,9 @@ void tx_process(
       double pct_cpu = (double)accum_total / 1e6 * 100.0;
 
       fprintf(stderr,
-        "[tx_process] total=%ldus (cpu=%.2f%%)  worst_call=%ldus  front=%ldus  gather=%ldus  "
+        "t=%.2fs [tx_process] total=%ldus (cpu=%.2f%%)  worst_call=%ldus  front=%ldus  gather=%ldus  "
         "fwd_fft+filter=%ldus  rev_fft+out=%ldus  tail=%ldus\n",
-        accum_total, pct_cpu, max_us_seen, accum_front, accum_gather,
+        _rxtx_elapsed_seconds(), accum_total, pct_cpu, max_us_seen, accum_front, accum_gather,
         accum_fwd_fft, accum_rev_fft, accum_tail);
 
       accum_front = accum_gather = accum_fwd_fft = 0;
