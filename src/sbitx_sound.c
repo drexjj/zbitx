@@ -1,4 +1,40 @@
-#include <stdio.h>
+// sbitx_sound.c
+//
+// Based on the tutorial at http://alsamodular.sourceforge.net/alsa_programming_howto.html
+// Also https://alsa.opensrc.org/HowTo_access_a_mixer_control
+
+// We are using 4 bytes per sample, each frame consists of two channels of audio, totaling 8 bytes.
+// buff_size/8 gives the frame count for one period.
+//
+// To simplify the work, we are picking up some settings for the Wolfson codec
+// as it connects to a raspberry pi. These values are interdependent
+// and they will work out of the box. It takes the guesswork out of
+// configuring the Raspberry Pi with Wolfson codec.
+
+// The audio channels are:
+//   PCM Playback
+//   Loopback Capture
+//   PCM Capture
+//   Loopback Play
+
+// MIXER api - There are six kinds of controls:
+//   playback volume
+//   playback switch
+//   playback enumeration
+//   capture volume
+//   capture switch
+//   capture enumeration
+//
+// examples of using amixer to mute and unmute:
+//   amixer -c 1  set 'Output Mixer Mic Sidetone' unmute
+//   amixer -c 1  set 'Output Mixer Mic Sidetone' mute
+//
+// examples of using sound_mixer function:
+//   'Mic' 0/1 = mute/unmute the mic
+//   'Line' 0/1= mute/unmute the line in
+//   'Master' 0-100 controls the earphone volume only, line out remains unaffected
+//   'Input Mux' 1/0 take the input either from the Mic or Line In#include <stdio.h>
+
 #include <alsa/asoundlib.h>
 #include <pthread.h>
 #include <complex.h>
@@ -9,65 +45,74 @@
 #include "wiringPi.h"
 #include "sdr.h"
 
-// Set the DEBUG define to 1 to compile in the debugging messages.
-// Set the DEBUG define to 2 to compile in detailed error reporting debugging messages.
+// set the DEBUG define to 1 to compile in the debugging messages.
+// set the DEBUG define to 2 to compile in detailed error reporting debugging messages.
 #define DEBUG -1
 
-// Set the DISABLE_LOOPBACK define to 1 to disable the loopback processing.
+// set the DISABLE_LOOPBACK define to 1 to disable the loopback processing.
 #define DISABLE_LOOPBACK 0
 
-/* follows the tutorial at http://alsamodular.sourceforge.net/alsa_programming_howto.html
-Next thing to try is http://www.saunalahti.fi/~s7l/blog/2005/08/21/Full%20Duplex%20ALSA
+// Used to reduce audio level to the loopback channel (FLDIGI).
+// NOTE: currently unused
+#define LOOPBACK_LEVEL_DIVISOR 8
 
-	We are using 4 bytes per sample, 
-	each frame is consists of two channels of audio, hence 8 bytes 
-  We are shooting for 1024x2 = 2048 samples per period. that is 8K
-  At two periods in the buffer, the buffer has to be 16K
+// ============================================================================
+// Global / static state
+// ============================================================================
 
-	To simply the work, we are picking up some settings for the Wolfson codec
-	as it connects to a raspberry pi. These values are interdependent
-	and they will work out of the box. It takes the guess work out of
-	configuring the Raspberry Pi with Wolfson codec.
-*/
+// --- Audio format / buffer sizing ---
+int rate = 96000;  // sample rate
 
-/*
-	The audio channels are:
-	PCM Playback
-	Loopback Capture
-	PCM Capture
-	Loopback Play
-*/
+// one 'frame' is 4 byte samples * 2 channels = 8 bytes
+// one 'period' is 1024 frames (buff_size/8), taken at 96000 frames/second = 1024 / 96000 = 10.67 ms per period
+static snd_pcm_uframes_t buff_size = 8192; // buffer size to hold just one period, not total (bytes)
+static int n_periods_per_buffer = 4;       // Number of periods (was 2, doubled for Pi Zero 2W)
 
-/*
-	MIXER api
+// --- ALSA PCM device handles ---
+static snd_pcm_t *pcm_play_handle=0;   	//handle for the pcm device
+static snd_pcm_t *pcm_capture_handle=0;   	//handle for the pcm device
+static snd_pcm_t *loopback_play_handle=0;   	//handle for the pcm device
+static snd_pcm_t *loopback_capture_handle=0;   	//handle for the pcm device
 
-	https://alsa.opensrc.org/HowTo_access_a_mixer_control
+static snd_pcm_stream_t play_stream = SND_PCM_STREAM_PLAYBACK;	//playback stream
+static snd_pcm_stream_t capture_stream = SND_PCM_STREAM_CAPTURE;	//playback stream
 
-https://android.googlesource.com/platform/hardware/qcom/audio/+/jb-mr1-dev/alsa_sound/ALSAMixer.cpp
+static snd_pcm_hw_params_t *hwparams;
+static snd_pcm_sw_params_t *swparams;
+static snd_pcm_hw_params_t *hloop_params;
+static snd_pcm_sw_params_t *sloop_params;
+static int exact_rate;   // Sample rate returned by
 
-https://github.com/bear24rw/alsa-utils/blob/master/amixer/amixer.c
+// --- Thread control ---
+static int	sound_thread_continue = 0;
+pthread_t sound_thread, loopback_thread;
+int use_virtual_cable = 0;
+unsigned long sound_millis = 0;
+struct Queue qloop;
 
-There are six kinds of controls:
-	playback volume 
-	playback switch
-	playback enumeration
-	capture volume
-	capture switch
-	capture enumeration
+// --- Loopback playback device reset handling ---
+static long int last_loopback_reset = 0;		//time interval of last loopback play reset - n1qm
+static int reset_loopback_interval = 300;  		// Seconds to reset loopback device
+static volatile int loopback_reset_requested = 0;
 
-examples of using amixer to mute and unmute:
-amixer -c 1  set 'Output Mixer Mic Sidetone' unmute
-amixer -c 1  set 'Output Mixer Mic Sidetone' mute
+// --- Error counters / scratch ---
+static int pcm_capture_error = 0;				  // count pcm capture errors (not used)
+static int pcm_play_write_error = 0;			// count play channel write errors
+static int pcm_loopback_write_error = 0;	// count loopback channel write errors
+static int result = 0;							// scratch variable for storing function call results
+// Note: Error messages appear when the sbitx program is started from the command line
 
+// --- Timing / stats bookkeeping ---
+static struct timespec gettime_now;
+static long int last_sec = 0;
+struct timeval tv;
+signed long pcm_read_old_time = 0;
+signed long pcm_read_new_time = 0;
+signed long delta_time = 0;
+unsigned long samples_read = 0;
+unsigned long samples_written = 0;
+static unsigned long loop_counter = 0;
 
-examples of using sound_mixer function:
-'Mic' 0/1 = mute/unmute the mic
-'Line' 0/1= mute/unmute the line in
-'Master' 0-100 controls the earphone volume only, line out remains unaffected
-'Input Mux' 1/0 take the input either from the Mic or Line In
-
-
-*/
 
 void sound_volume(char *card_name, char *element, int volume)
 {
@@ -110,10 +155,7 @@ void sound_mixer(char *card_name, char *element, int make_on)
     snd_mixer_selem_id_set_name(sid, element);
     snd_mixer_elem_t* elem = snd_mixer_find_selem(handle, sid);
 
-/*		if (elem)
-			puts("Element found.");	
-	*/
-    //find out if the his element is capture side or plaback
+    //find out if this element is capture side or plaback
     if(snd_mixer_selem_has_capture_switch(elem)){
 			//puts("this is a capture switch.");  
 	  	snd_mixer_selem_set_capture_switch_all(elem, make_on);
@@ -140,78 +182,6 @@ void sound_mixer(char *card_name, char *element, int make_on)
 		}
     snd_mixer_close(handle);
 }
-
-int rate = 96000; /* Sample rate */
-// Pi Zero 2W (Cortex-A53 @ 1GHz) needs more buffer headroom than Pi 4 (A72 @ 1.8GHz).
-// Original: buff_size=8192, n_periods=2 → 10.67ms budget per period (too tight at 1GHz).
-// Increased to n_periods=4 → 21.3ms budget. This adds ~10ms latency — imperceptible
-// for CW RX decode but you may notice a slight sidetone delay. If sidetone delay is
-// objectionable, try n_periods_per_buffer = 3 (16ms) as a middle ground.
-static snd_pcm_uframes_t buff_size = 8192; /* Periodsize (bytes) */ 
-static int n_periods_per_buffer = 4;       /* Number of periods (was 2, doubled for Pi Zero 2W) */
-//static int n_periods_per_buffer = 1024;       /* Number of periods */
-
-static snd_pcm_t *pcm_play_handle=0;   	//handle for the pcm device
-static snd_pcm_t *pcm_capture_handle=0;   	//handle for the pcm device
-static snd_pcm_t *loopback_play_handle=0;   	//handle for the pcm device
-static snd_pcm_t *loopback_capture_handle=0;   	//handle for the pcm device
-
-static snd_pcm_stream_t play_stream = SND_PCM_STREAM_PLAYBACK;	//playback stream
-static snd_pcm_stream_t capture_stream = SND_PCM_STREAM_CAPTURE;	//playback stream
-
-static snd_pcm_hw_params_t *hwparams;
-static snd_pcm_sw_params_t *swparams;
-static snd_pcm_hw_params_t *hloop_params;
-static snd_pcm_sw_params_t *sloop_params;
-static int exact_rate;   /* Sample rate returned by */
-static int	sound_thread_continue = 0;
-pthread_t sound_thread, loopback_thread;
-
-static long int last_loopback_reset = 0;		//time interval of last loopback play reset - n1qm
-static int reset_loopback_interval = 300;  		// Seconds to reset loopback device
-// loopback_play_handle is written to every ~10ms by sound_thread (the
-// real-time audio thread). snd_pcm_t is not thread-safe for concurrent
-// calls on the same handle without external locking, and sound_reset()
-// used to call snd_pcm_reset(loopback_play_handle) directly from whatever
-// thread called it -- tx_on() on the GTK thread (every key-down/PTT) and
-// loopback_thread's own periodic timer. That's an unsynchronized cross
-// -thread race on the same ALSA handle sound_thread is actively writing
-// to, and was causing ALSA underruns both at TX transitions and at
-// scattered, unpredictable points during ordinary RX. Rather than add a
-// mutex (which risks priority inversion between the SCHED_OTHER GTK
-// thread and the SCHED_FIFO audio thread), other threads now just raise
-// this flag; only sound_thread ever calls snd_pcm_reset() on the handle,
-// from its own loop.
-static volatile int loopback_reset_requested = 0;
-
-#define LOOPBACK_LEVEL_DIVISOR 8				// Constant used to reduce audio level to the loopback channel (FLDIGI)
-static int pcm_capture_error = 0;				// count pcm capture errors
-static int pcm_play_write_error = 0;			// count play channel write errors
-static int pcm_loopback_write_error = 0;		// count loopback channel write errors
-static int result = 0;							// scratch variable for storing function call results
-// Note: Error messages appear when the sbitx program is started from the command line
-
-int use_virtual_cable = 0;
-unsigned long sound_millis = 0;
-
-struct Queue qloop;
-
-/* this function should be called just once in the application process.
-Calling it frequently will result in more allocation of hw_params memory blocks
-without releasing them.
-The list of PCM devices available on any platform can be found by running
-	aplay -L 
-We have to pass the id of one of those devices to this function.
-The sequence of the alsa functions must be maintained for this to work consistently
-
-It returns a -1 if the device didn't open. The error message is on stderr.
-
-IMPORTANT:
-The sound is playback is carried on in a non-blocking way
-Update - Sound playback now uses blocking ALSA calls, although the calls
-do not block until the buffers are completely filled (which will never occur)
-
-*/
 
 int sound_start_play(char *device){
 	//found out the correct device through aplay -L (for pcm devices)
@@ -245,16 +215,15 @@ int sound_start_play(char *device){
 		return(-1);
 	}
 
-  /* Set sample format */
+  // Set sample format
 	e = snd_pcm_hw_params_set_format(pcm_play_handle, hwparams, SND_PCM_FORMAT_S32_LE);
 	if (e < 0) {
 		fprintf(stderr, "*Error setting plyaback format.\n");
 		return(-1);
 	}
 
-
-	/* Set sample rate. If the exact rate is not supported */
-	/* by the hardware, use nearest possible rate.         */ 
+	// Set sample rate. If the exact rate is not supported
+	// by the hardware, use nearest possible rate. 
 	exact_rate = rate;
 	e = snd_pcm_hw_params_set_rate(pcm_play_handle, hwparams, exact_rate, 0);
 	if ( e< 0) {
@@ -268,12 +237,11 @@ int sound_start_play(char *device){
 		fprintf(stderr, "Playback sampling rate is set to %d\n", exact_rate);
 #endif
 
-	/* Set number of channels */
+	// Set number of channels
 	if ((e = snd_pcm_hw_params_set_channels(pcm_play_handle, hwparams, 2)) < 0) {
 		fprintf(stderr, "*Error setting playback channels.\n");
 		return(-1);
 	}
-
 
 	// BUG FIX: see the matching fix + explanation in sound_start_capture().
 	// Same mistake here -- period size was being set to the *buffer*-size
@@ -308,7 +276,6 @@ int sound_start_play(char *device){
         printf("Unable to set start threshold mode for playback: %s\n", snd_strerror(e));
     }
 
-
 #if DEBUG > 0
 	printf("PCM Playback Buffer Size: %d\n",snd_pcm_avail(pcm_play_handle));
 	puts("All hw params set to play sound");
@@ -316,7 +283,6 @@ int sound_start_play(char *device){
 
 	return 0;
 }
-
 
 int sound_start_loopback_capture(char *device){
 
@@ -345,15 +311,15 @@ int sound_start_loopback_capture(char *device){
 		return(-1);
 	}
 
-  /* Set sample format */
+  // Set sample format
 	e = snd_pcm_hw_params_set_format(loopback_capture_handle, hloop_params, SND_PCM_FORMAT_S32_LE);
 	if (e < 0) {
 		fprintf(stderr, "*Error setting loopback capture format.\n");
 		return(-1);
 	}
 
-	/* Set sample rate. If the exact rate is not supported */
-	/* by the hardware, use nearest possible rate.         */ 
+	// Set sample rate. If the exact rate is not supported
+	// by the hardware, use nearest possible rate.
 	exact_rate = 48000;
 	//printf("Setting loopback capture rate to %d\n", exact_rate);
 	e = snd_pcm_hw_params_set_rate(loopback_capture_handle, hloop_params, exact_rate, 0);
@@ -365,7 +331,7 @@ int sound_start_loopback_capture(char *device){
 	if (48000 != exact_rate)
 		fprintf(stderr, "#The loopback capture rate set to %d Hz\n", exact_rate);
 
-	/* Set number of channels */
+	// Set number of channels
 	if ((e = snd_pcm_hw_params_set_channels(loopback_capture_handle, hloop_params, 2)) < 0) {
 		fprintf(stderr, "*Error setting loopback capture channels.\n");
 		return(-1);
@@ -391,7 +357,7 @@ int sound_start_loopback_capture(char *device){
 	}
 
 	//printf("%d: set  hwparams\n", __LINE__);
-	/* set some parameters in the driver to handle the latencies */
+	// set some parameters in the driver to handle the latencies
 	snd_pcm_sw_params_malloc(&sloop_params);
 	if((e = snd_pcm_sw_params_current(loopback_capture_handle, sloop_params)) < 0){
 		fprintf(stderr, "Error getting current loopback capture sw params : %s\n", snd_strerror(e));
@@ -413,14 +379,6 @@ int sound_start_loopback_capture(char *device){
 	
 	return 0;
 }
-
-/*
-The capture is opened in a blocking mode, the read function will block until 
-there are enough samples to return a block.
-This ensures that the blocks are returned in perfect timing with the codec's clock
-Once you process these captured samples and send them to the playback device, you
-just wait for the next block to arrive 
-*/
 
 int sound_start_capture(char *device){
 	snd_pcm_hw_params_alloca(&hwparams);
@@ -448,15 +406,15 @@ int sound_start_capture(char *device){
 		return(-1);
 	}
 
-  /* Set sample format */
+  // Set sample format
 	e = snd_pcm_hw_params_set_format(pcm_capture_handle, hwparams, SND_PCM_FORMAT_S32_LE);
 	if (e < 0) {
 		fprintf(stderr, "*Error setting PCM capture format.\n");
 		return(-1);
 	}
 
-	/* Set sample rate. If the exact rate is not supported */
-	/* by the hardware, use nearest possible rate.         */ 
+	// Set sample rate. If the exact rate is not supported
+	// by the hardware, use nearest possible rate.
 	exact_rate = rate;
 	e = snd_pcm_hw_params_set_rate(pcm_capture_handle, hwparams, exact_rate, 0);
 	if ( e< 0) {
@@ -467,8 +425,7 @@ int sound_start_capture(char *device){
 	if (rate != exact_rate)
 		fprintf(stderr, "#The PCM capture rate %d changed to %d Hz\n", rate, exact_rate);
 
-
-	/* Set number of channels */
+	// Set number of channels
 	if ((e = snd_pcm_hw_params_set_channels(pcm_capture_handle, hwparams, 2)) < 0) {
 		fprintf(stderr, "*Error setting PCM capture channels.\n");
 		return(-1);
@@ -496,7 +453,6 @@ int sound_start_capture(char *device){
 		    fprintf(stderr, "*Error setting PCM Capture buffersize.\n");
 		    return(-1);
 	}
-
 
 	if (snd_pcm_hw_params(pcm_capture_handle, hwparams) < 0) {
 		fprintf(stderr, "*Error setting PCM capture HW params.\n");
@@ -539,15 +495,15 @@ int sound_start_loopback_play(char *device){
 		return(-1);
 	}
 
-  /* Set sample format */
+  // Set sample format
 	e = snd_pcm_hw_params_set_format(loopback_play_handle, hwparams, SND_PCM_FORMAT_S32_LE);
 	if (e < 0) {
 		fprintf(stderr, "*Error setting loopback Play format.\n");
 		return(-1);
 	}
 
-	/* Set sample rate. If the exact rate is not supported */
-	/* by the hardware, use nearest possible rate.         */ 
+	// Set sample rate. If the exact rate is not supported
+	// by the hardware, use nearest possible rate. 
 	exact_rate = 48000;
 	e = snd_pcm_hw_params_set_rate(loopback_play_handle, hwparams, exact_rate, 0);
 	if ( e< 0) {
@@ -558,7 +514,7 @@ int sound_start_loopback_play(char *device){
 		fprintf(stderr, "*The loopback playback rate %d changed to %d Hz\n", rate, exact_rate);
 
 
-	/* Set number of channels */
+	// Set number of channels
 	if ((e = snd_pcm_hw_params_set_channels(loopback_play_handle, hwparams, 2)) < 0) {
 		fprintf(stderr, "*Error setting playback channels.\n");
 		return(-1);
@@ -593,19 +549,6 @@ int sound_start_loopback_play(char *device){
 	return 0;
 }
 
-// this is only a test process to be substituted to try loopback 
-// it was used to debug timing errors
-void sound_process2(int32_t *input_i, int32_t *input_q, int32_t *output_i, int32_t *output_q, int n_samples){
- 
-	for (int i= 0; i < n_samples; i++){
-		output_i[i] = input_q[i];
-		output_q[i] = 0;
-	}	
-}
-
-//check that we haven't free()-ed up the hwparams block
-//don't call this function at all until that is fixed
-//you don't have to call it anyway
 void sound_stop(){
 	snd_pcm_drop(pcm_play_handle);
 	snd_pcm_drain(pcm_play_handle);
@@ -613,6 +556,7 @@ void sound_stop(){
 	snd_pcm_drop(pcm_capture_handle);
 	snd_pcm_drain(pcm_capture_handle);
 }
+
 //Reset alsa looback playback device, fixes compounding latency issues - n1qm
 //Approx .07 seconds will be lost every 5 minutes
 void sound_reset(int force){
@@ -625,7 +569,7 @@ void sound_reset(int force){
 	
 	// Don't touch loopback_play_handle from this thread -- just ask
 	// sound_thread to do it. See comment at loopback_reset_requested.
-	loopback_reset_requested = 1;
+	loopback_reset_requested = 1; 
 
 	last_loopback_reset = ltv;
 #if DEBUG > 0
@@ -633,34 +577,15 @@ void sound_reset(int force){
 #endif
 }
 
-static int count = 0;
-static struct timespec gettime_now;
-//static long int last_time = 0;
-static long int last_sec = 0;
-static int nframes = 0;
-int32_t	resample_in[10000];
-int32_t	resample_out[10000];
+unsigned long sbitx_millis(){
+	return sound_millis;
+}
 
 struct timeval GetTimeStamp()
 {
     struct timeval tv;
     gettimeofday(&tv,NULL);
     return tv;
-}
-struct timeval tv;
-signed long pcm_read_old_time = 0;
-signed long pcm_read_new_time = 0;
-signed long delta_time = 0;
-unsigned long samples_read = 0;
-unsigned long samples_written = 0;
-static unsigned long loop_counter = 0;
-
-int last_second = 0;
-int nsamples = 0;
-//int	played_samples = 0;
-
-unsigned long sbitx_millis(){
-	return sound_millis;
 }
 
 int sound_loop(){
@@ -688,21 +613,10 @@ int sound_loop(){
   snd_pcm_prepare(pcm_play_handle);
   snd_pcm_prepare(loopback_play_handle);
 
-/*  
-  pcmreturn = snd_pcm_writei(pcm_play_handle, data_out, frames*2);		// Get a head start on filling the queue
-#if DEBUG > 0  
-  printf("Pre-filling play and loopback queues\n");
-  printf("Playback buffer filled with %d samples\n",pcmreturn);
-#endif
-  pcmreturn = snd_pcm_writei(loopback_play_handle, data_out, frames);		// Get a head start on filling the queue
-#if DEBUG > 0
-  printf("Loopback buffer filled with %d samples\n",pcmreturn);  
-#endif
-*/
 	//Note: the virtual cable samples queue should be flushed at the start of tx
  	qloop.stall = 1;
 
-// ******************************************************************************************************** The Big Loop starts here
+// ****************** The Big Loop starts here  ******************
 
   while(sound_thread_continue) {
 
@@ -845,8 +759,6 @@ if (_loop_period_us > 15000) {
 
 		if (use_virtual_cable)
 		{
-			//printf(" we have %d in qloop, writing now\n", q_length(&qloop));
-			// if don't we have enough to last two iterations loop back...
 			if (q_length(&qloop) < pcmreturn)
 			{
 #if DEBUG > -1
@@ -855,18 +767,11 @@ if (_loop_period_us > 15000) {
 				continue;
 			}
 	
-			//copy 1024 samples from the queue.
-			//i = 0;
-			//j = 0;
-
-			
 			for (int samples  = 0; samples < 1024; samples++)
 			{
 				input_i[samples] = input_q[samples] = q_read(&qloop);
-				//j++; 
 			}
-			//played_samples += 1024;
-		}  // end for use_virtual_cable test
+		}  
 		else 
 		{
 			while (i < ret_card)
@@ -1035,7 +940,6 @@ if (_loop_period_us > 15000) {
 			printf("\n");
 #endif				
 			pswitch = 0;
-			
 		}
 	}
 	// End of new pcm play write routine
@@ -1225,10 +1129,8 @@ int loopback_loop(){
   printf("********Ending loopback thread\n");
 }
 
-/*
-We process the sound in a background thread.
-It will call the user-supplied function sound_process()  
-*/
+// We process the sound in a background thread.
+// It will call the user-supplied function sound_process()  
 void *sound_thread_function(void *ptr){
 	char *device = (char *)ptr;
 	struct sched_param sch;
@@ -1273,7 +1175,7 @@ void *sound_thread_function(void *ptr){
 		return NULL;
 	}
 
-	//Preset the last time the loopback was reset (now during init)
+	// Preset the last time the loopback was reset (now during init)
 	clock_gettime(CLOCK_MONOTONIC_RAW, &gettime_now);
 	last_loopback_reset = gettime_now.tv_sec;
 
@@ -1337,7 +1239,6 @@ void *loopback_thread_function(void *ptr){
 		return NULL;
 	}
 		
-	
 	sound_thread_continue = 1;
 	loopback_loop();
 	sound_stop();
@@ -1364,21 +1265,3 @@ void sound_input(int loop){
     use_virtual_cable = 0;
 	}
 }
-
-//demo, uncomment it to test it out
-/*
-void sound_process(int32_t *input_i, int32_t *input_q, int32_t *output_i, int32_t *output_q, int n_samples){
- 
-	for (int i= 0; i < n_samples; i++){
-		output_i[i] = input_i[i];
-		output_q[i] = input_q[i];
-	}	
-}
-
-void main(int argc, char **argv){
-	sound_thread_start("plughw:0,0");
-	sleep(10);
-	sound_thread_stop();
-	sleep(10);
-}
-*/
