@@ -124,9 +124,13 @@ fi
 echo "Brought to you by the volunteer sBitx project developer team"
 echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
 # This addition is used to provide the application the capability to adjust the local system time -W2JON
+# CAP_SYS_NICE lets the audio thread acquire SCHED_FIFO real-time priority
+# without running as root -- required since the ALSA period-size fix, or
+# the audio thread silently falls back to normal scheduling.
 # It should probably always run last at it'll fail if the file system doesn't support it - N1QM
+# These are  combined to prevent the _last_ setting from being the only one effective 
 if [ "$F" = "sbitx" ] && [ -x $F ]; then 
 	# || : is a little hack to allow the script to continue if an error occurs - n1qm
-	sudo setcap CAP_SYS_TIME+ep $F || :
+	sudo setcap 'cap_sys_time+ep,cap_sys_nice+eip' $F || :
 fi
 echo Build completed at $(date)
