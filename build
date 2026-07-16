@@ -131,6 +131,6 @@ echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
 # These are  combined to prevent the _last_ setting from being the only one effective 
 if [ "$F" = "sbitx" ] && [ -x $F ]; then 
 	# || : is a little hack to allow the script to continue if an error occurs - n1qm
-	sudo setcap 'cap_sys_time+ep,cap_sys_nice+eip' $F || :
+	sudo setcap 'cap_sys_time+ep cap_sys_nice+eip' $F || :
 fi
 echo Build completed at $(date)
