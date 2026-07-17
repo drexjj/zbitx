@@ -155,6 +155,8 @@ void sound_mixer(char *card_name, char *element, int make_on)
     snd_mixer_selem_id_set_name(sid, element);
     snd_mixer_elem_t* elem = snd_mixer_find_selem(handle, sid);
 
+	//  ******** detect control type and dispatch to the right API  ********
+	//
     //find out if this element is capture side or plaback
     if(snd_mixer_selem_has_capture_switch(elem)){
 			//puts("this is a capture switch.");  
@@ -183,6 +185,8 @@ void sound_mixer(char *card_name, char *element, int make_on)
     snd_mixer_close(handle);
 }
 
+//  *******  PCM Playback audio channel initialization  *******
+//
 int sound_start_play(char *device){
 	//found out the correct device through aplay -L (for pcm devices)
 	//puts a playback handle into the pointer to the pointer
@@ -284,6 +288,8 @@ int sound_start_play(char *device){
 	return 0;
 }
 
+//  *******  Loopback Capture audio channel initialization  *******
+//
 int sound_start_loopback_capture(char *device){
 
 	snd_pcm_hw_params_alloca(&hloop_params);
@@ -336,9 +342,8 @@ int sound_start_loopback_capture(char *device){
 		fprintf(stderr, "*Error setting loopback capture channels.\n");
 		return(-1);
 	}
-
+	
 	// BUG FIX: same period/buffer-size mixup as sound_start_capture() and
-	// sound_start_play()
 	if ((e = snd_pcm_hw_params_set_periods(loopback_capture_handle, hloop_params, n_periods_per_buffer, 0)) < 0) {
 		fprintf(stderr, "*Error setting loopback capture periods.\n");
 		return(-1);
@@ -380,6 +385,7 @@ int sound_start_loopback_capture(char *device){
 	return 0;
 }
 
+//  *******  PCM Capture audio channel initialization  ********
 int sound_start_capture(char *device){
 	snd_pcm_hw_params_alloca(&hwparams);
 	
@@ -467,6 +473,8 @@ int sound_start_capture(char *device){
 	return 0;
 }
 
+//  ********  Loopback Play audio channel initialization  ********
+//
 int sound_start_loopback_play(char *device){
 	//found out the correct device through aplay -L (for pcm devices)
 
