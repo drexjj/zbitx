@@ -1988,7 +1988,14 @@ void tx_process(
 	for (i = 0; i < MAX_BINS / 2; i++)
 	{
 		double s = creal(r->fft_time[i + (MAX_BINS / 2)]);
-		output_tx[i] = s * scale * tx_amp;
+	    // applying the ALC below got dropped at one point
+		output_tx[i] = s * scale * tx_amp * alc_level;
+ 		if (min > output_tx[i])
+ 			min = output_tx[i];
+ 		if (max < output_tx[i])
+ 		if (min > output_tx[i])
+ 			min = output_tx[i];
+ 		if (max < output_tx[i])
 		if (min > output_tx[i])
 			min = output_tx[i];
 		if (max < output_tx[i])
