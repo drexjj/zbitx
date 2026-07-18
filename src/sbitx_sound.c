@@ -743,11 +743,11 @@ if (_loop_period_us > 15000) {
                         + (_drain_t1.tv_nsec - _drain_t0.tv_nsec) / 1000L;
         long _readi_us  = (_readi_t1.tv_sec - _readi_t0.tv_sec) * 1000000L
                         + (_readi_t1.tv_nsec - _readi_t0.tv_nsec) / 1000L;
-        fprintf(stderr,
-            "t=%.2fs loop period long: %ldus (budget ~10667us)  drain=%ldus  readi=%ldus  "
-            "real_writei=%ldus  loop_writei=%ldus  dropped=%d\n",
-            _t_since_start_s, _loop_period_us, _drain_us, _readi_us,
-            _prev_real_writei_us, _prev_loop_writei_us, _backlog_dropped);
+        //fprintf(stderr,
+        //    "t=%.2fs loop period long: %ldus (budget ~10667us)  drain=%ldus  readi=%ldus  "
+        //    "real_writei=%ldus  loop_writei=%ldus  dropped=%d\n",
+        //     _t_since_start_s, _loop_period_us, _drain_us, _readi_us,
+        //    _prev_real_writei_us, _prev_loop_writei_us, _backlog_dropped);
         _loopwarn_last = _loop_top;
         _loopwarn_have_last = 1;
     }
