@@ -28,7 +28,7 @@
 int bandtweak = 4;		// Band power array index the \bs command will target -n1qm
 int ext_ptt_enable = 0; // ADDED BY KF7YDU.
 char audio_card[32];
-static int tx_shift = 512;
+static int tx_shift = 600;  // old default was 512
 parametriceq tx_eq;
 parametriceq rx_eq;
 
@@ -2274,6 +2274,11 @@ static int hw_settings_handler(void *user, const char *section,
 		band_power[hw_init_index++].scale = atof(value);
 	if (!strcmp(name, "bfo_freq"))
 		bfo_freq = atoi(value);
+	// center_bin setting restored, this had
+	// been hardcoded (as tx_shift) with no config hook at all, so per-unit
+	// hardware calibration (e.g. center_bin=600) could never be applied here.
+	if (!strcmp(name, "center_bin"))
+		tx_shift = atoi(value);
 	// Add variable for SSB/CW Power Factor Adjustment W9JES
 	if (!strcmp(name, "ssb_val"))
 		ssb_val = atof(value);
@@ -2646,8 +2651,9 @@ void setup()
 	
 	add_rx(7000000, MODE_LSB, -3000, -300);
 	add_tx(7000000, MODE_LSB, -3000, -300);
-	rx_list->tuned_bin = 512;
-	tx_list->tuned_bin = 512;
+	// tuned_bin now follows tx_shift (was separately hardcoded to 512)
+	rx_list->tuned_bin = tx_shift;
+	tx_list->tuned_bin = tx_shift;
 	tx_init(7000000, MODE_LSB, -3000, -150);
 
 	// detect the version of sbitx
