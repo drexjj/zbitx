@@ -1,4 +1,3 @@
-
 #!/bin/sh -e
 # Note: the '-e' flag will make the script stop immediately upon error with 
 # the error reflected in the environment.  This lets one issue commands like
@@ -87,46 +86,16 @@ if [ $OPT -eq 1 ]; then
 	strip $F
 fi
 
-# Open the user_settings.ini file, search for #60m=, and add it if missing
-if [ -f "$HOME/sbitx/data/user_settings.ini" ]; then
-    echo "Checking user_settings.ini for 60 meters"
-    if ! grep -q "^#60m=" "$HOME/sbitx/data/user_settings.ini"; then
-        echo "Adding 60 meter band to user_settings.ini"
-        sed -i '/#40m=/a\#60m=' "$HOME/sbitx/data/user_settings.ini"
-    else
-        echo "60 meter band already exists in user_settings.ini"
-    fi
-else
-    echo "user_settings.ini not found"
-fi
-
-# Update hw_settings.ini to add 60m band configuration
-if [ -f "$HOME/sbitx/data/hw_settings.ini" ]; then
-    echo "Checking hw_settings.ini for 60m band"
-    if grep -q "f_start=5250000" "$HOME/sbitx/data/hw_settings.ini"; then
-        echo "60m band already exists in hw_settings.ini"
-    else
-        echo "Adding 60m band to hw_settings.ini"
-        awk '{
-          print $0
-        } /f_start=3500000/ {
-          found=1
-        } found && /scale=/ {
-          print ""
-          print "[tx_band]\nf_start=5250000\nf_stop=5450000\nscale=0.0033"
-          found=0
-        }' $HOME/sbitx/data/hw_settings.ini > temp.ini && mv temp.ini $HOME/sbitx/data/hw_settings.ini
-    fi
-else
-    echo "hw_settings.ini not found"
-fi
-
-echo "Brought to you by the volunteer sBitx project developer team"
+echo "Brought to you by the volunteer developer team at Radio&Elec Hub"
 echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
 # This addition is used to provide the application the capability to adjust the local system time -W2JON
+# CAP_SYS_NICE lets the audio thread acquire SCHED_FIFO real-time priority
+# without running as root -- required since the ALSA period-size fix, or
+# the audio thread silently falls back to normal scheduling.
 # It should probably always run last at it'll fail if the file system doesn't support it - N1QM
+# These are  combined to prevent the _last_ setting from being the only one effective 
 if [ "$F" = "sbitx" ] && [ -x $F ]; then 
 	# || : is a little hack to allow the script to continue if an error occurs - n1qm
-	sudo setcap CAP_SYS_TIME+ep $F || :
+	sudo setcap 'cap_sys_time+ep cap_sys_nice+eip' $F || :
 fi
 echo Build completed at $(date)

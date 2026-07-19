@@ -239,10 +239,8 @@ void si5351bx_setfreq(uint8_t clk, uint32_t frequency){
   if (pll_div & 1)
     pll_div++;
 
-//   set_freq_fixeddiv(clk, pll, frequency, pll_div,   ## changed this to reduce spurs and xtalk in the mixer
-//                    SI5351_CLK_DRIVE_STRENGTH_8MA);
    set_freq_fixeddiv(clk, pll, frequency, pll_div, 
-                    SI5351_CLK_DRIVE_STRENGTH_4MA);
+                    SI5351_CLK_DRIVE_STRENGTH_4MA);  // drive strength affects spectral spur level
 //	set_frequency_fixedpll(clk, pll, PLLFREQ, frequency, SI_R_DIV_1, 
 //		SI5351_CLK_DRIVE_STRENGTH_8MA);
 }
