@@ -25,10 +25,7 @@
 // Function declaration for S-meter
 extern int calculate_s_meter(struct rx *r, double rx_gain);
 
-// External variables for voltage and current readings from INA260 sensor
-extern float voltage;
-extern float current;
-extern int has_ina260;
+// INA260 sensor removed — not present on this hardware
 
 // Function declarations for browser microphone handling
 extern int browser_mic_input(int16_t *samples, int count);
@@ -169,14 +166,7 @@ static void get_updates(struct mg_connection *c, int all){
 		mg_ws_send(c, buff, strlen(buff), WEBSOCKET_OP_TEXT);
 	}
 	
-	// Send voltage and current readings if INA260 is equipped
-	if (has_ina260 == 1) {
-		sprintf(buff, "VOLTAGE %.2f", voltage);
-		mg_ws_send(c, buff, strlen(buff), WEBSOCKET_OP_TEXT);
-		
-		sprintf(buff, "CURRENT %.2f", current);
-		mg_ws_send(c, buff, strlen(buff), WEBSOCKET_OP_TEXT);
-	}
+
 
 	while(1){
 		int update = remote_update_field(i, buff);

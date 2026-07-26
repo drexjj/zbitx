@@ -74,18 +74,15 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
-#include <stdio.h>
 #include <math.h>
 #include <stdbool.h>
 #include <ctype.h>
 #include <arpa/inet.h>
 #include <time.h>
-#include <math.h>
 #include <complex.h>
 #include <fftw3.h>
 #include <pthread.h>
 #include <unistd.h>
-#include <ctype.h>
 #include <wiringPi.h>
 #include "sdr.h"
 #include "sdr_ui.h"
@@ -97,63 +94,43 @@ struct morse_tx {
 	char *code;
 };
 
-struct morse_tx morse_tx_table[] = {
-	{'~', " "}, //dummy, a null character
-	{' ', " "},
-	{'a', ".-"},
-	{'b', "-..."},
-	{'c', "-.-."},
-	{'d', "-.."},
-	{'e', "."},
-	{'f', "..-."},
-	{'g', "--."},
-	{'h', "...."},
-	{'i', ".."},
-	{'j', ".---"},
-	{'k', "-.-"},
-	{'l', ".-.."},
-	{'m', "--"},
-	{'n', "-."},
-	{'o', "---"},
-	{'p', ".--."},
-	{'q', "--.-"},
-	{'r', ".-."},
-	{'s', "..."},
-	{'t', "-"},
-	{'u', "..-"},
-	{'v', "...-"},
-	{'w', ".--"},
-	{'x', "-..-"},
-	{'y', "-.--"},
-	{'z', "--.."},
-	{'1', ".----"},
-	{'2', "..---"},
-	{'3', "...--"},
-	{'4', "....-"},
-	{'5', "....."},
-	{'6', "-...."},
-	{'7', "--..."},
-	{'8', "---.."},
-	{'9', "----."},
-	{'0', "-----"},
-	{'.', ".-.-.-"},
-	{',', "--..--"},
-	{'?', "..--.."},
-	{'/', "-..-."},
-	{' ', " "},
-	{'=', "-...-"},   //BT (prosigns based upon k40/k42 keyers) W0ANM
-	{'<', ".-.-."},   //AR W0ANM
-	{'>', "...-.-"},  //SK W0ANM
-	//{'+', ".-.-."},
-	{'+', "--.- .-. .-.. ..--.."}, //qrl ?  W0ANM
-	{'(', "-.--."},   //KN
-	//{'[', ".-.-."},
-	{'[', "--.- .-. --.."},   //qrz  W0ANM
-	//{']', ".-..."},
-	{']', "--.- ... .-.."},   //qsl  W0ANM
-	{':', ".-..."},   //AS  W0ANM
-	{'\'', "--..--"},
-	{'&', "-...-"},
+static const struct morse_tx morse_tx_table[] = {
+    {'~', " "}, // dummy, a null character or sentinel
+    {' ', " "},
+
+    // Letters
+    {'a', ".-"},   {'b', "-..."}, {'c', "-.-."}, {'d', "-.."},  {'e', "."},
+    {'f', "..-."}, {'g', "--."},  {'h', "...."}, {'i', ".."},   {'j', ".---"},
+    {'k', "-.-"},  {'l', ".-.."}, {'m', "--"},   {'n', "-."},   {'o', "---"},
+    {'p', ".--."}, {'q', "--.-"}, {'r', ".-."},  {'s', "..."},  {'t', "-"},
+    {'u', "..-"},  {'v', "...-"}, {'w', ".--"},  {'x', "-..-"}, {'y', "-.--"},
+    {'z', "--.."},
+
+    // Digits
+    {'1', ".----"}, {'2', "..---"}, {'3', "...--"}, {'4', "....-"}, {'5', "....."},
+    {'6', "-...."}, {'7', "--..."}, {'8', "---.."}, {'9', "----."}, {'0', "-----"},
+
+    // Punctuation
+    {'.', ".-.-.-"},
+    {',', "--..--"},
+    {'?', "..--.."},
+    {'\'', ".----."},   // apostrophe
+    {'!', "-.-.--"},
+    {'/', "-..-."},
+    {')', "-.--.-"},
+    {':', "---..."},
+    {';', "-.-.-."},
+    {'-', "-....-"},    // hyphen/minus
+    {'_', "..--.-"},    // underscore
+    {'"', ".-..-."},    // quote
+    {'@', ".--.-."},
+    {'$', "...-..-"},
+    {'+', ".-.-."},     // plus (same code as AR prosign)
+    {'=', "-...-"},     // equals (same code as BT prosign)
+    {'&', ".-..."},     // ampersand (same code as AS prosign)
+    {'(', "-.--."},     // left paren (same code as KN prosign)
+    {'>', "...-.-"},    // <SK> prosign
+    {'<', "-...-.-"}    // <BK> prosign
 };
 
 struct morse_rx {
@@ -161,63 +138,43 @@ struct morse_rx {
 	char *code;
 };
 
-struct morse_rx morse_rx_table[] = {
-	{"~", " "}, //dummy, a null character
-	{" ", " "},
-	{"A", ".-"},
-	{"B", "-..."},
-	{"C", "-.-."},
-	{"D", "-.."},
-	{"E", "."},
-	{"F", "..-."},
-	{"G", "--."},
-	{"H", "...."},
-	{"I", ".."},
-	{"J", ".---"},
-	{"K", "-.-"},
-	{"L", ".-.."},
-	{"M", "--"},
-	{"N", "-."},
-	{"O", "---"},
-	{"P", ".--."},
-	{"Q", "--.-"},
-	{"R", ".-."},
-	{"S", "..."},
-	{"T", "-"},
-	{"U", "..-"},
-	{"V", "...-"},
-	{"W", ".--"},
-	{"X", "-..-"},
-	{"Y", "-.--"},
-	{"Z", "--.."},
-	{"1", ".----"},
-	{"2", "..---"},
-	{"3", "...--"},
-	{"4", "....-"},
-	{"5", "....."},
-	{"6", "-...."},
-	{"7", "--..."},
-	{"8", "---.."},
-	{"9", "----."},
-	{"0", "-----"},
-	{"<STOP>", ".-.-.-"},
-	{"<COMMA>", "--..--"},
-	{"?", "..--.."},
-	{"/", "-..-."},
-	{ "'", ".----."},
-	{"!", "-.-.--"},
-	{":", "---..."},
-	{"-", "-....-"},
-	{"_", "..--.-"},
-	{"@", ".--.-."},
-	{"<AR>", ".-.-."},
-	{"<AS>", ".-..."},
-	{"<STOP>", ".-.-."},
-	{"<BT>", "-...-"},
-	//{"vu2", "...-..-..---"}, erroneous  W9JES
-	//{"vu3", "...-..-...--"}, erroneous  W9JES
-	{"5nn", ".....-.-."},
-	{"ur", "..-.-."},
+static const struct morse_rx morse_rx_table[] = {
+    {"~", " "}, // dummy, a null character
+    {" ", " "},
+
+    {"A", ".-"},   {"B", "-..."}, {"C", "-.-."}, {"D", "-.."},  {"E", "."},
+    {"F", "..-."}, {"G", "--."},  {"H", "...."}, {"I", ".."},   {"J", ".---"},
+    {"K", "-.-"},  {"L", ".-.."}, {"M", "--"},   {"N", "-."},   {"O", "---"},
+    {"P", ".--."}, {"Q", "--.-"}, {"R", ".-."},  {"S", "..."},  {"T", "-"},
+    {"U", "..-"},  {"V", "...-"}, {"W", ".--"},  {"X", "-..-"}, {"Y", "-.--"},
+    {"Z", "--.."},
+
+    {"1", ".----"}, {"2", "..---"}, {"3", "...--"}, {"4", "....-"}, {"5", "....."},
+    {"6", "-...."}, {"7", "--..."}, {"8", "---.."}, {"9", "----."}, {"0", "-----"},
+
+    {"?", "..--.."}, {"/", "-..-."}, {"'", ".----."}, {"!", "-.-.--"}, {":", "---..."},
+    {"-", "-....-"}, {"_", "..--.-"}, {".", ".-.-.-"}, {",", "--..--"}, {"@", ".--.-."},
+    {")", "-.--.-"}, {"$", "...-..-"}, {";", "-.-.-."},
+    // note: omitted "+", "=", "&", "(" to avoid collisions with <AR>, <BT>, <AS>, <KN>
+
+    // Prosigns
+    {"<AR>", ".-.-."},
+    {"<BT>", "-...-"},
+    {"<AS>", ".-..."},
+    {"<KN>", "-.--."},
+    {"<BK>", "-...-.-"},
+    {"<SK>", "...-.-"},
+
+    // frequently run-together characters that we want to decode right (concatenated codes)
+    {"FB",  "..-.-..."},   // F (..-.) + B (-...)
+    {"UR",  "..-.-."},     // U (..-) + R (.-.)
+    {"RST", ".-....-"},    // R (.-.) + S (...) + T (-)
+    {"5NN", ".....-.-."},  // 5 (.....) + N (-.) + N (-.)
+    {"CQ",  "-.-.--.-"},   // C (-.-.) + Q (--.-)
+    {"73",  "--......--"}, // 7 (--...) + 3 (...--)
+    {"TNX", "--.-..-"},    // T (-) + N (-.) + X (-..-)
+    {"HW",  ".....--"},    // H (....) + W (.--)
+    {"QRZ", "--.-.-.--.."} // Q (--.-) + R (.-.) + Z (--..)
 };
 
 struct bin {
@@ -264,22 +221,125 @@ struct cw_decoder{
 struct cw_decoder decoder;
 #define FLOAT_SCALE (1073741824.0)
 
-/* cw tx state variables */
+// Blackman-Harris envelope table (480 samples, 0.0 → 1.0 rise) 5 ms at 96000 samples per sec
+// values generated in off-line spreadsheet
+#define CW_ENVELOPE_LEN 480
+static const float cw_envelope_data[CW_ENVELOPE_LEN] = {
+  0.0f, 0.000001822646818f, 0.000004862928747f, 0.000009124651631f, 0.00001461314364f,
+  0.00002133525526f, 0.00002929935926f, 0.00003851535071f, 0.00004899464693f, 0.00006075018742f,
+  0.00007379643391f, 0.00008814937022f, 0.0001038265022f, 0.0001208468579f, 0.000139230987f,
+  0.0001590009611f, 0.0001801803736f, 0.0002027943394f, 0.0002268694947f, 0.0002524339972f,
+  0.0002795175253f, 0.0003081512785f, 0.0003383679766f, 0.0003702018599f, 0.0004036886883f,
+  0.0004388657414f, 0.0004757718181f, 0.0005144472358f, 0.00055493383f,   0.000597274954f,
+  0.000641515478f,  0.0006877017885f, 0.0007358817877f, 0.0007861048926f, 0.000838422034f,
+  0.0008928856557f, 0.0009495497136f, 0.001008469674f,  0.001069702514f,  0.001133306717f,
+  0.001199342276f,  0.001267870687f,  0.001338954951f,  0.001412659571f,  0.001489050552f,
+  0.001568195394f,  0.001650163095f,  0.00173502415f,   0.00182285054f,   0.001913715741f,
+  0.002007694712f,  0.002104863897f,  0.002205301222f,  0.002309086089f,  0.002416299377f,
+  0.002527023435f,  0.002641342079f,  0.002759340589f,  0.002881105707f,  0.003006725627f,
+  0.003136289998f,  0.003269889912f,  0.003407617907f,  0.003549567953f,  0.003695835457f,
+  0.003846517247f,  0.004001711576f,  0.004161518108f,  0.004326037916f,  0.004495373476f,
+  0.00466962866f,   0.004848908724f,  0.005033320309f,  0.005222971427f,  0.005417971458f,
+  0.005618431137f,  0.005824462549f,  0.006036179119f,  0.006253695604f,  0.006477128085f,
+  0.006706593951f,  0.006942211898f,  0.007184101912f,  0.007432385261f,  0.007687184486f,
+  0.007948623384f,  0.008216827003f,  0.008491921626f,  0.008774034761f,  0.009063295124f,
+  0.009359832633f,  0.009663778389f,  0.009975264662f,  0.01029442488f,   0.01062139362f,
+  0.01095630658f,   0.01129930056f,   0.01165051347f,   0.01201008431f,   0.01237815311f,
+  0.01275486099f,   0.01314035006f,   0.01353476346f,   0.01393824534f,   0.01435094079f,
+  0.01477299587f,   0.0152045576f,    0.01564577389f,   0.01609679355f,   0.01655776627f,
+  0.0170288426f,    0.01751017391f,   0.01800191239f,   0.01850421103f,   0.01901722357f,
+  0.01954110449f,   0.020076009f,     0.02062209299f,   0.02117951305f,   0.02174842637f,
+  0.0223289908f,    0.02292136477f,   0.02352570726f,   0.02414217781f,   0.02477093647f,
+  0.02541214377f,   0.02606596068f,   0.02673254864f,   0.02741206944f,   0.02810468528f,
+  0.02881055867f,   0.02952985244f,   0.0302627297f,    0.03100935379f,   0.0317698883f,
+  0.03254449696f,   0.03333334368f,   0.03413659246f,   0.03495440742f,   0.03578695268f,
+  0.03663439242f,   0.03749689077f,   0.03837461181f,   0.03926771955f,   0.04017637784f,
+  0.04110075039f,   0.04204100071f,   0.04299729205f,   0.04396978741f,   0.04495864945f,
+  0.04596404052f,   0.04698612253f,   0.048025057f,     0.04908100497f,   0.05015412695f,
+  0.05124458294f,   0.05235253231f,   0.05347813384f,   0.0546215456f,    0.05578292498f,
+  0.0569624286f,    0.05816021229f,   0.05937643102f,   0.06061123891f,   0.06186478915f,
+  0.06313723393f,   0.06442872447f,   0.06573941092f,   0.06706944232f,   0.06841896659f,
+  0.06978813043f,   0.07117707935f,   0.07258595755f,   0.07401490791f,   0.07546407198f,
+  0.07693358984f,   0.07842360016f,   0.07993424009f,   0.08146564522f,   0.08301794957f,
+  0.08459128548f,   0.08618578363f,   0.08780157298f,   0.08943878066f,   0.09109753203f,
+  0.09277795053f,   0.0944801577f,    0.09620427313f,   0.09795041436f,   0.09971869689f,
+  0.1015092341f,    0.1033221373f,    0.1051575154f,    0.1070154753f,    0.1088961214f,
+  0.110799556f,     0.1127258787f,    0.114675187f,     0.1166475756f,    0.118643137f,
+  0.1206619608f,    0.1227041342f,    0.1247697418f,    0.1268588652f,    0.1289715835f,
+  0.1311079729f,    0.1332681068f,    0.1354520557f,    0.1376598871f,    0.1398916657f,
+  0.1421474529f,    0.1444273072f,    0.1467312842f,    0.1490594358f,    0.1514118113f,
+  0.1537884565f,    0.1561894137f,    0.1586147223f,    0.1610644181f,    0.1635385335f,
+  0.1660370975f,    0.1685601357f,    0.17110767f,      0.1736797188f,    0.176276297f,
+  0.1788974158f,    0.1815430826f,    0.1842133014f,    0.186908072f,     0.1896273909f,
+  0.1923712504f,    0.1951396391f,    0.1979325417f,    0.200749939f,     0.2035918078f,
+  0.2064581209f,    0.2093488471f,    0.2122639512f,    0.2152033937f,    0.2181671313f,
+  0.2211551164f,    0.2241672971f,    0.2272036175f,    0.2302640174f,    0.2333484323f,
+  0.2364567935f,    0.239589028f,     0.2427450584f,    0.2459248029f,    0.2491281755f,
+  0.2523550857f,    0.2556054386f,    0.2588791349f,    0.2621760707f,    0.2654961377f,
+  0.2688392233f,    0.2722052101f,    0.2755939764f,    0.2790053957f,    0.2824393374f,
+  0.2858956658f,    0.2893742409f,    0.2928749183f,    0.2963975485f,    0.2999419779f,
+  0.3035080481f,    0.3070955958f,    0.3107044536f,    0.314334449f,     0.3179854052f,
+  0.3216571405f,    0.3253494686f,    0.3290621989f,    0.3327951356f,    0.3365480787f,
+  0.3403208234f,    0.3441131603f,    0.3479248752f,    0.3517557495f,    0.3556055598f,
+  0.3594740783f,    0.3633610725f,    0.3672663051f,    0.3711895345f,    0.3751305144f,
+  0.379088994f,     0.3830647179f,    0.3870574261f,    0.3910668542f,    0.3950927334f,
+  0.3991347901f,    0.4031927466f,    0.4072663205f,    0.4113552251f,    0.4154591693f,
+  0.4195778576f,    0.4237109902f,    0.4278582629f,    0.4320193673f,    0.4361939907f,
+  0.4403818162f,    0.4445825227f,    0.4487957847f,    0.453021273f,     0.4572586539f,
+  0.4615075898f,    0.4657677391f,    0.4700387562f,    0.4743202914f,    0.4786119913f,
+  0.4829134985f,    0.4872244516f,    0.4915444859f,    0.4958732324f,    0.5002103187f,
+  0.5045553687f,    0.5089080026f,    0.5132678373f,    0.5176344858f,    0.522007558f,
+  0.52638666f,      0.530771395f,     0.5351613626f,    0.5395561592f,    0.5439553779f,
+  0.548358609f,     0.5527654393f,    0.5571754528f,    0.5615882306f,    0.5660033508f,
+  0.5704203885f,    0.5748389163f,    0.5792585039f,    0.5836787184f,    0.5880991243f,
+  0.5925192836f,    0.5969387559f,    0.6013570981f,    0.6057738652f,    0.6101886097f,
+  0.6146008819f,    0.6190102301f,    0.6234162004f,    0.6278183372f,    0.6322161827f,
+  0.6366092774f,    0.64099716f,      0.6453793677f,    0.6497554359f,    0.6541248985f,
+  0.6584872881f,    0.6628421357f,    0.6671889711f,    0.6715273231f,    0.675856719f,
+  0.6801766853f,    0.6844867473f,    0.6887864298f,    0.6930752564f,    0.69735275f,
+  0.7016184332f,    0.7058718276f,    0.7101124546f,    0.714339835f,     0.7185534896f,
+  0.7227529386f,    0.7269377023f,    0.7311073008f,    0.7352612544f,    0.7393990833f,
+  0.7435203081f,    0.7476244495f,    0.7517110287f,    0.7557795673f,    0.7597852375f,
+  0.763860612f,     0.7678721645f,    0.7718637692f,    0.7758349513f,    0.7797852371f,
+  0.7837141538f,    0.7876212299f,    0.7915059951f,    0.7953679803f,    0.799206718f,
+  0.8030217422f,    0.8068125885f,    0.810578794f,     0.8143198978f,    0.8180354408f,
+  0.8217249658f,    0.8253880176f,    0.8290241434f,    0.8326328922f,    0.8362138155f,
+  0.8397664674f,    0.8432904041f,    0.8467851845f,    0.8502503702f,    0.8536855255f,
+  0.8570902175f,    0.8604640161f,    0.8638064945f,    0.8671172285f,    0.8703957974f,
+  0.8736417837f,    0.8768547729f,    0.8800343544f,    0.8831801207f,    0.8862916679f,
+  0.8893685958f,    0.892410508f,     0.8954170119f,    0.8983877184f,    0.9013222429f,
+  0.9042202045f,    0.9070812264f,    0.9099049361f,    0.9126909653f,    0.9154389501f,
+  0.9181485309f,    0.9208193525f,    0.9234510646f,    0.9260433211f,    0.9285957808f,
+  0.9311081073f,    0.9335799689f,    0.9360110389f,    0.9384009954f,    0.9407495217f,
+  0.9430563062f,    0.9453210422f,    0.9475434285f,    0.9497231691f,    0.9518599732f,
+  0.9539535556f,    0.9560036365f,    0.9580099415f,    0.9599722018f,    0.9618901544f,
+  0.9637635418f,    0.9655921122f,    0.9673756199f,    0.9691138246f,    0.9708064922f,
+  0.9724533943f,    0.9740543088f,    0.9756090194f,    0.9771173158f,    0.978578994f,
+  0.9799938561f,    0.9813617103f,    0.9826823713f,    0.9839556597f,    0.9851814028f,
+  0.986359434f,     0.9874895931f,    0.9885717264f,    0.9896056867f,    0.9905913331f,
+  0.9915285314f,    0.9924171538f,    0.9932570792f,    0.994048193f,     0.9947903872f,
+  0.9954835604f,    0.9961276181f,    0.9967224722f,    0.9972680415f,    0.9977642513f,
+  0.9982110337f,    0.9986083278f,    0.9989560792f,    0.9992542402f,    0.9995027701f,
+  0.9997016348f,    0.9998508072f,    0.9999502668f,    1.0f
+};
+
+// cw tx state variables
 static unsigned long millis_now = 0;
 
 static int cw_key_state = 0;
 static int cw_period;
-static struct vfo cw_tone, cw_env;
-static int keydown_count=0;
+static int cw_delay_ms = 300;
+static struct vfo cw_tone;          // cw_env removed, now using data-driven envelope
+static int keydown_count = 0;
 static int keyup_count = 0;
-static float cw_envelope = 1;		//used to shape the envelope
-static int cw_tx_until = 0;			//delay switching to rx, expect more txing
+static float cw_envelope = 0.0f;   // current envelope amplitude
+static int cw_envelope_pos = 0;    // position within cw_envelope_data[]
+static int cw_tx_until = 0;        // delay switching to rx, expect more txing
 static int data_tx_until = 0;
+static int cached_pitch = 0;       // seeded in cw_init() to avoid a spurious
+                                    // 0 Hz retune on the very first idle sample
 
 static char *symbol_next = NULL;
-pthread_t iambic_thread;
-char iambic_symbol[4];
-char cw_symbol_prev = ' ';
 
 static uint8_t cw_current_symbol = CW_IDLE;
 static uint8_t cw_next_symbol = CW_IDLE;
@@ -288,6 +348,12 @@ static uint8_t cw_mode = CW_STRAIGHT;
 static int cw_bytes_available = 0; //chars available in the tx queue
 #define CW_MAX_SYMBOLS 12
 char cw_key_letter[CW_MAX_SYMBOLS];
+
+// called when the PITCH control changes
+// Writing cached_pitch here means it's already correct by the time TX starts
+void cw_set_pitch(int hz){
+    cached_pitch = hz;
+}
 
 static uint8_t cw_get_next_symbol(){  //symbol to translate into CW_DOT, CW_DASH, etc
 
@@ -363,14 +429,17 @@ void handle_cw_state_machine(uint8_t, uint8_t);
 float cw_tx_get_sample() {
   float sample = 0;
   uint8_t state_machine_mode;
-  uint8_t symbol_now;
-  
+  static uint8_t symbol_now = CW_IDLE;
+	
+  static int pitch_poll_counter = 0;
   if ((keydown_count == 0) && (keyup_count == 0)) {
-    // note current time to use with UI value of CW_DELAY to control break-in
     millis_now = millis();
-    // set CW pitch if needed
-    if (cw_tone.freq_hz != get_pitch())
-      vfo_start( &cw_tone, get_pitch(), 0);
+    if (++pitch_poll_counter >= 2000) {   // ~20ms at 96kHz -- plenty responsive for a pitch control
+        pitch_poll_counter = 0;
+        cached_pitch = get_pitch();
+    }
+    if (cw_tone.freq_hz != cached_pitch)
+      vfo_start( &cw_tone, cached_pitch, 0);
   }
   
   // check to see if input available from macro or keyboard
@@ -394,31 +463,38 @@ float cw_tx_get_sample() {
     handle_cw_state_machine(state_machine_mode, symbol_now);
   }
 
-  // key the transmitter with some shaping
-  // at 20 wpm  a CW_DOT starts with keydown_count = 5760
+  // data-driven Blackman-Harris envelope shaping
   if (keydown_count > 0) {
-    if(cw_envelope < 0.999)
-      cw_envelope = ((vfo_read(&cw_env)/FLOAT_SCALE) + 1)/2;
-    keydown_count--;
-  } else {  // countdown all the keydown_count before doing keyup_count
-    if(cw_envelope > 0.001)
-      cw_envelope = ((vfo_read(&cw_env)/FLOAT_SCALE) + 1)/2;
-    if (keyup_count > 0)
-      keyup_count--;
+      if (cw_envelope_pos == 0)
+          cw_envelope = 0.0f;
+      if (cw_envelope_pos < CW_ENVELOPE_LEN)
+          cw_envelope = cw_envelope_data[cw_envelope_pos++];
+      else
+          cw_envelope = 1.0f;
+      keydown_count--;
+  } else if (keyup_count > 0) {
+      if (cw_envelope_pos > 0) {
+          cw_envelope = cw_envelope_data[--cw_envelope_pos];
+          if (cw_envelope_pos == 0)
+              keyup_count--;
+      } else {
+          cw_envelope = 0.0f;
+          keyup_count--;
+      }
   }
-  sample = (vfo_read(&cw_tone) / FLOAT_SCALE) * cw_envelope;
+  sample = ((vfo_read(&cw_tone) / FLOAT_SCALE) * cw_envelope) / 8;
   
   // keep extending 'cw_tx_until' while we're sending
   if ((symbol_now == CW_DOWN) || (symbol_now == CW_DOT) ||
       (symbol_now == CW_DASH) || (symbol_now == CW_SQUEEZE) ||
       (keydown_count > 0))
-    cw_tx_until = millis_now + get_cw_delay();
+    cw_tx_until = millis_now + cw_delay_ms;
   // if macro or keyboard characters remain in the buffer
   // prevent switching from xmit to rcv and cutting off macro
   if (cw_bytes_available != 0)
     cw_tx_until = millis_now + 1000;
 
-  return sample / 8;
+  return sample;
 }
 
 
@@ -432,13 +508,18 @@ void handle_cw_state_machine(uint8_t state_machine_mode, uint8_t symbol_now) {
   // printf("symbol_now %d\n", symbol_now);
   switch (state_machine_mode) {
   case CW_STRAIGHT:
-      if (symbol_now == CW_IDLE)
-        cw_current_symbol = CW_IDLE;
-      if (symbol_now == CW_DOWN) {
-        keydown_count = 1; // this is very short, much less than a dit
-        keyup_count = 0;
-        cw_current_symbol = CW_DOWN;
+    if (symbol_now == CW_IDLE) {
+      if (cw_current_symbol == CW_DOWN) {
+        keyup_count = cw_envelope_pos;  // ramp down from wherever we are
+        keydown_count = 0;
       }
+      cw_current_symbol = CW_IDLE;
+    }
+    if (symbol_now == CW_DOWN) {
+      keydown_count = CW_ENVELOPE_LEN; // enough samples to fully ramp up
+      keyup_count = 0;
+      cw_current_symbol = CW_DOWN;
+    }
     break; // done with CW_STRAIGHT mode
 
   case CW_BUG:
@@ -1208,9 +1289,14 @@ void cw_rx(int32_t *samples, int count){
 	//the samples better be an integral multiple of n_bins
 	int decimation_factor = 96000/SAMPLING_FREQ;
 	if (count % (decimation_factor * decoder.n_bins)){
-		printf("cw_decoder bins don't align up with sample block %d vs %d\n",
-			count, decoder.n_bins);
-		assert(0);
+		// On slower hardware (e.g. Pi Zero 2W) ALSA recovery after an underrun
+		// can return a partial frame count that is not a multiple of 1024.
+		// The old assert(0) here would kill the process and cause a restart loop.
+		// We skip this block gracefully instead — the decoder simply misses one
+		// processing cycle, which at worst causes a momentary decode gap.
+		fprintf(stderr, "cw_rx: skipping partial block (count=%d, need multiple of %d)\n",
+			count, decimation_factor * decoder.n_bins);
+		return;
 	}
 
 	//we decimate the samples from 96000 to 12000
@@ -1252,16 +1338,16 @@ void cw_init(){
 	cw_rx_bin_init(&decoder.signal, INIT_TONE, N_BINS, SAMPLING_FREQ);
 	
 	//init cw tx with some reasonable values
-  //cw_env shapes the envelope of the cw waveform
-  //frequency was at 50 (20 ms rise time), changed it to 200 (4 ms rise time)
-  //to improve cw performance at higher speeds
-	vfo_start(&cw_env, 200, 49044); //start in the third quardrant, 270 degree
-	vfo_start(&cw_tone, 700, 0);
-	cw_period = 9600; 		// At 96ksps, 0.1sec = 1 dot at 12wpm
+	cached_pitch = get_pitch();   // seed before first vfo_start so cw_tx_get_sample()
+	                              // doesn't see a stale 0 Hz cached_pitch and
+	                              // retune to silence before the pitch is first polled
+	vfo_start(&cw_tone, cached_pitch, 0);
+	cw_period = 9600;        // At 96ksps, 0.1sec = 1 dot at 12wpm
 	cw_key_letter[0] = 0;
 	keydown_count = 0;
 	keyup_count = 0;
-	cw_envelope = 0;
+	cw_envelope = 0.0f;
+	cw_envelope_pos = 0;
 }
 
 void cw_poll(int bytes_available, int tx_is_on){
@@ -1269,6 +1355,7 @@ void cw_poll(int bytes_available, int tx_is_on){
 	cw_key_state = key_poll();
 	int wpm  = field_int("WPM");
 	cw_period = (12 * 9600)/wpm;
+	cw_delay_ms = get_cw_delay();
 
 	//retune the rx pitch if needed
 	int cw_rx_pitch = field_int("PITCH");

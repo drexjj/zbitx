@@ -93,7 +93,7 @@ void remote_slice() {
         len = recv(data_socket, buffer, sizeof(buffer), 0);
         if (len > 0) {
             buffer[len] = '\0'; // Ensure the buffer is null-terminated. Changed by W9JES
-            printf("Received on remote : [%s]\n", buffer);
+            //printf("Received on remote : [%s]\n", buffer);
             // Strip off the last \r or \n
             buffer[strcspn(buffer, "\r\n")] = '\0';
             if (buffer[0] == '?') {
