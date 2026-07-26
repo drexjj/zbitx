@@ -89,36 +89,21 @@ void remote_slice() {
         // init the console
         remote_init();
     } else { 
-        //this section was changed by W9JES and others for multiple responses on one line
-        len = recv(data_socket, buffer, sizeof(buffer)-1, 0);
+        //this section was changed by W9JES
+        len = recv(data_socket, buffer, sizeof(buffer), 0);
         if (len > 0) {
-            buffer[len] = '\0';
-            if (incoming_ptr + len >= MAX_DATA) incoming_ptr = 0; // overflow guard
-            memcpy(incoming_data + incoming_ptr, buffer, len);
-            incoming_ptr += len;
-            incoming_data[incoming_ptr] = '\0';
-        
-            char *start = incoming_data;
-            char *nl;
-            while ((nl = strchr(start, '\n')) != NULL) {
-                *nl = '\0';
-                if (nl > start && *(nl-1) == '\r') *(nl-1) = '\0';  // cr or line feed
-                //printf("Received on remote : [%s]\n", start);
-                if (start[0] == '?') {
-                    char response[2000];
-                    get_field_value_by_label(start + 1, response);
-                    strcat(response, "\n");
-                    remote_write(response);
-                } else if (strlen(start)) {
-                    remote_execute(start);
-                }
-                start = nl + 1;
+            buffer[len] = '\0'; // Ensure the buffer is null-terminated. Changed by W9JES
+            //printf("Received on remote : [%s]\n", buffer);
+            // Strip off the last \r or \n
+            buffer[strcspn(buffer, "\r\n")] = '\0';
+            if (buffer[0] == '?') {
+                char response[2000];
+                get_field_value_by_label(buffer+1, response);
+                strcat(response, "\n");
+                remote_write(response);
+            } else if(strlen(buffer)) {
+                remote_execute(buffer);
             }
-            // shift any leftover partial line to the front of the buffer
-            int remaining = incoming_ptr - (start - incoming_data);
-            memmove(incoming_data, start, remaining);
-            incoming_ptr = remaining;
-            incoming_data[incoming_ptr] = '\0';
         } else if (len == 0) {
             // The recv function returned 0 -> the client closed the connection. Added by w9JES
             puts("Client closed the connection. Restarting to listen...");
