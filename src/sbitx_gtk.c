@@ -22,17 +22,12 @@ The initial sync between the gui values, the core radio values, settings, et al 
 #include <gdk/gdkkeysyms.h>
 #include <gdk/gdkx.h>
 #include <gtk/gtkx.h>
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <cairo.h>
 #include <sys/file.h>
-#include <errno.h>
-#include <sys/file.h>
-#include <string.h>
-#include <errno.h>
 #include <wiringPi.h>
 #include <wiringSerial.h>
 #include "sdr.h"
@@ -69,7 +64,6 @@ int eptt_enabled = 0;
 int comp_enabled = 0;
 int input_volume = 0;
 int vfo_lock_enabled = 0;
-int has_ina260 = 0;
 int zero_beat_enabled = 0;
 int tx_panafall_enabled = 0;
 
@@ -122,13 +116,6 @@ static long time_delta = 0;
 // Zero beat detection
 int zero_beat_min_magnitude = 0;
 
-// INA260 I2C Address and Register Definitions
-#define INA260_ADDRESS 0x40
-#define CONFIG_REGISTER 0x00
-#define VOLTAGE_REGISTER 0x02
-#define CURRENT_REGISTER 0x01
-#define CONFIG_DEFAULT 0x6127 // Default INA260 configuration: Continuous mode, averages, etc.
-float voltage = 0.0f, current = 0.0f;
 
 // mouse/touch screen state
 static int mouse_down = 0;
@@ -867,10 +854,6 @@ struct field main_controls[] = {
 
 	// WFCALL option ON/OFF
 	{"#wfcall_option", do_toggle_option, 1000, -1000, 40, 40, "WFCALLOPT", 40, "OFF", FIELD_TOGGLE, FONT_FIELD_VALUE,
-	 "ON/OFF", 0, 0, 0, 0},
-
-	// INA260 Option ON/OFF (enable/disable sensor readout)
-	{"#ina260_option", do_toggle_option, 1000, -1000, 40, 40, "INA260OPT", 40, "OFF", FIELD_TOGGLE, FONT_FIELD_VALUE,
 	 "ON/OFF", 0, 0, 0, 0},
 
 	// Sub Menu Control 473,50 <- was
@@ -3165,7 +3148,13 @@ if (!strcmp(field_str("SMETEROPT"), "ON") &&
 	int n_bins = (int)((1.0 * spectrum_span) / 46.875);
 	// the center frequency is at the center of the lower sideband,
 	// i.e, three-fourth way up the bins.
-	int starting_bin = (3 * MAX_BINS) / 4 - n_bins / 2;
+	// get starting bin correct even when tx_shift is not 512
+	int pitch_bin_offset = 0;
+	if (rx_list->mode == MODE_CW)
+		pitch_bin_offset = (int)((get_pitch() / 46.875) + 0.5);
+	else if (rx_list->mode == MODE_CWR)
+		pitch_bin_offset = -(int)((get_pitch() / 46.875) + 0.5);
+	int starting_bin = MAX_BINS - get_tx_shift() - pitch_bin_offset - n_bins / 2;
 	int ending_bin = starting_bin + n_bins;
 
 	float x_step = (1.0 * f->width) / n_bins;
@@ -3323,7 +3312,9 @@ if (!strcmp(field_str("SMETEROPT"), "ON") &&
 	// draw the needle
 	for (struct rx *r = rx_list; r; r = r->next)
 	{
-		int needle_x = (f->width * (MAX_BINS / 2 - r->tuned_bin)) / (MAX_BINS / 2);
+		//int needle_x = (f->width * (MAX_BINS / 2 - r->tuned_bin)) / (MAX_BINS / 2);
+		// center display even when tuned bin is not 512
+		int needle_x = (f->width / 2) + (f->width * (get_tx_shift() - r->tuned_bin)) / (MAX_BINS / 2);
 		fill_rect(gfx, f->x + needle_x, f->y, 1, grid_height, SPECTRUM_NEEDLE);
 	}
 }
@@ -5560,7 +5551,6 @@ gboolean check_plugin_controls(gpointer data)
 	struct field *eptt_stat = get_field("#eptt");
 	struct field *vfo_stat = get_field("#vfo_lock");
 	struct field *comp_stat = get_field("#comp_plugin");
-	struct field *ina260_stat = get_field("#ina260_option");
 	struct field *zero_beat_stat = get_field("#zero_beat");
 	struct field *tx_panafall_stat = get_field("#tx_panafall");
 	
@@ -5588,17 +5578,6 @@ gboolean check_plugin_controls(gpointer data)
 			zero_beat_enabled = 0;
 		}
 	}	
-	if (ina260_stat)
-	{
-		if (!strcmp(ina260_stat->value, "ON"))
-		{
-			has_ina260 = 1;
-		}
-		else if (!strcmp(ina260_stat->value, "OFF"))
-		{
-			has_ina260 = 0;
-		}
-	}
 
 	if (eq_stat)
 	{
@@ -6326,103 +6305,8 @@ void rtc_sync()
 			  t_utc->tm_hour, t_utc->tm_min, t_utc->tm_sec);
 }
 
-// Function to configure the INA260
-void configure_ina260()
-{
-	uint8_t config_data[2] = {
-		(uint8_t)(CONFIG_DEFAULT >> 8),	 // MSB
-		(uint8_t)(CONFIG_DEFAULT & 0xFF) // LSB
-	};
-	if (i2cbb_write_i2c_block_data(INA260_ADDRESS, CONFIG_REGISTER, 2, config_data) < 0)
-	{
-		printf("Error configuring INA260\n");
-		field_set("INA260OPT", "OFF");
-	}
-	else
-	{
-		printf("INA260 configured successfully\n");
-		field_set("INA260OPT", "ON");
-	}
-}
 
-// Function to read optional INA260 voltage and current sensor
-void read_voltage_current(float *voltage, float *current)
-{
-	uint8_t data_buffer[2]; // Buffer to hold raw register data
 
-	// Explicitly set the register pointer to the voltage register
-	if (i2cbb_write_i2c_block_data(INA260_ADDRESS, VOLTAGE_REGISTER, 0, NULL) < 0)
-	{
-		printf("Error setting voltage register pointer\n");
-		*voltage = 0.0f;
-		*current = 0.0f;
-		return;
-	}
-
-	// Read the voltage register (2 bytes)
-	int e = i2cbb_read_i2c_block_data(INA260_ADDRESS, VOLTAGE_REGISTER, 2, data_buffer);
-	if (e != 2)
-	{
-		printf("Error reading voltage register\n");
-		*voltage = 0.0f;
-		*current = 0.0f;
-		return;
-	}
-	uint16_t raw_voltage = (data_buffer[0] << 8) | data_buffer[1];
-	// printf("Raw Voltage: 0x%04X\n", raw_voltage); // Debugging
-	*voltage = raw_voltage * 1.25e-3f; // Convert to volts (1.25 mV per LSB)
-
-	// Explicitly set the register pointer to the current register
-	if (i2cbb_write_i2c_block_data(INA260_ADDRESS, CURRENT_REGISTER, 0, NULL) < 0)
-	{
-		printf("Error setting current register pointer\n");
-		*voltage = 0.0f;
-		*current = 0.0f;
-		return;
-	}
-
-	// Read the current register (2 bytes)
-	e = i2cbb_read_i2c_block_data(INA260_ADDRESS, CURRENT_REGISTER, 2, data_buffer);
-	if (e != 2)
-	{
-		printf("Error reading current register\n");
-		*voltage = 0.0f;
-		*current = 0.0f;
-		return;
-	}
-	uint16_t raw_current = (data_buffer[0] << 8) | data_buffer[1];
-	// printf("Raw Current: 0x%04X\n", raw_current); // Debugging
-
-	// Handle saturation or invalid value
-	if (raw_current == 0xFFFF)
-	{
-		printf("Current measurement out of range or invalid\n");
-		*current = 0.0f;
-	}
-	else
-	{
-		*current = raw_current * 1.25e-3f; // Convert to amps (1.25 mA per LSB)
-	}
-}
-
-void check_read_ina260_cadence(float *voltage, float *current)
-{
-	static time_t last_time = 0; // Keep track of the last time the voltage/current was read
-	time_t current_time;
-
-	// Get the current time in seconds
-	current_time = time(NULL);
-
-	// Check if 1 second has passed since the last check
-	if (current_time - last_time >= 1)
-	{
-		// 1 second has passed, read the voltage and current
-		read_voltage_current(voltage, current);
-
-		// Update the last_time to the current time
-		last_time = current_time;
-	}
-}
 
 int key_poll() {
   int key = CW_IDLE;
@@ -6511,13 +6395,10 @@ void tuning_isr(void)
 		tuning_ticks--;
 }
 
-void query_swr()
-{
-	/* ATtiny85 SWR bridge at I2C 0x8 has been removed.
-	 * fwdpower and vswr are now set by the RP2040 front panel text parser
-	 * inside zbitx_poll().  This function is kept as a no-op so any
-	 * existing call sites compile without changes. */
-}
+/* query_swr() removed — it used I2C address 0x08 (wrong) with a fixed 4-byte binary
+ * protocol (also wrong). On this hardware the Pico 2040 is at address 0x0a and
+ * sends power/SWR data as text ("vbatt %d\npower %d\nvswr %d\n") which
+ * zbitx_poll() already reads correctly via i2cbb_read_rll(0xa, ...). */
 void oled_toggle_band()
 {
 	unsigned int freq_now = field_int("FREQ");
@@ -6685,7 +6566,9 @@ void web_get_spectrum(char *buff)
 	int n_bins = (int)((1.0 * spectrum_span) / 46.875);
 	// the center frequency is at the center of the lower sideband,
 	// i.e, three-fourth way up the bins.
-	int starting_bin = (3 * MAX_BINS) / 4 - n_bins / 2;
+	//int starting_bin = (3 * MAX_BINS) / 4 - n_bins / 2;
+	// even when center_bin is not 512
+	int starting_bin = MAX_BINS - get_tx_shift() - n_bins / 2;
 	int ending_bin = starting_bin + n_bins;
 
 	int j = 3;
@@ -6800,7 +6683,12 @@ void zbitx_get_spectrum(char *buff){
   int n_bins = (int)((1.0 * spectrum_span) / 46.875);
   //the center frequency is at the center of the lower sideband,
   //i.e, three-fourth way up the bins.
-  int starting_bin = (3 *MAX_BINS)/4 - n_bins/2;
+  int pitch_bin_offset = 0;
+  if (rx_list->mode == MODE_CW)
+    pitch_bin_offset = (int)((get_pitch() / 46.875) + 0.5);
+  else if (rx_list->mode == MODE_CWR)
+    pitch_bin_offset = -(int)((get_pitch() / 46.875) + 0.5);
+  int starting_bin = MAX_BINS - get_tx_shift() - pitch_bin_offset - n_bins / 2;
   int ending_bin = starting_bin + n_bins;
 
   int j;
@@ -6868,6 +6756,23 @@ static void zbitx_logs(){
 void zbitx_poll(int all){
 	char buff[3000];
 	static unsigned int last_update = 0;
+
+	// --- Timing instrumentation: is zbitx_poll() itself a source of the
+	// ~once/sec, ~25-30ms audio-thread stalls seen via sound_loop's
+	// "loop period long" warning? This runs on the GTK thread and does
+	// bit-banged I2C (CPU-spinning busy-waits, not sleeps) for every
+	// changed field, potentially with retries. It no longer shares a lock
+	// with the audio thread (read_power() -- the old audio-side i2cbb
+	// caller -- is dead code on this hardware), but the busy-spinning
+	// could still be stealing CPU cycles from the audio thread's core.
+	// Reports only when this call takes long enough to matter, rate
+	// limited to ~1/sec so the print itself can't skew the measurement.
+	struct timespec _zp_t0, _zp_t1;
+	clock_gettime(CLOCK_MONOTONIC, &_zp_t0);
+	static struct timespec _zp_epoch;
+	static int _zp_have_epoch = 0;
+	if (!_zp_have_epoch) { _zp_epoch = _zp_t0; _zp_have_epoch = 1; }
+	// --- end timing preamble ---
 
 	int count = 0;
 	int e = 0;
@@ -7000,11 +6905,53 @@ void zbitx_poll(int all){
 				update_logs = 1;
 				printf("<<<< refresh the log >>>>>\n");
 			}
-			remote_execute(buff);
+			// the reply can be several newline-separated commands in one
+			// block (e.g. "vbatt %d\npower %d\nvswr %d\n"). cmd_exec()
+			// only parses a single command per call and treats embedded
+			// newlines as part of the first command's argument string,
+			// so split on '\n' and execute each line separately.
+			char *line = strtok(buff, "\n");
+			while (line){
+				if (strlen(line))
+					remote_execute(line);
+				line = strtok(NULL, "\n");
+			}
+		}
+	}
+	else{
+		// TEMP DEBUG: rate-limited notice when the Pico read fails outright
+		// (returns -1), so we can tell "not talking to us" apart from
+		// "talking, but not sending power/vswr". Remove once confirmed.
+		static unsigned int last_fail_print = 0;
+		unsigned int now_ms = millis();
+		if (now_ms - last_fail_print > 2000) {
+			fprintf(stderr, "zbitx_poll: i2cbb_read_rll(0xa) FAILED (-1)\n");
+			last_fail_print = now_ms;
 		}
 	}
 	zbitx_poll_done:
 	last_update = this_time;
+
+	clock_gettime(CLOCK_MONOTONIC, &_zp_t1);
+	long _zp_us = (_zp_t1.tv_sec - _zp_t0.tv_sec) * 1000000L
+	            + (_zp_t1.tv_nsec - _zp_t0.tv_nsec) / 1000L;
+	if (_zp_us > 2000) {  // only care about calls over 2ms
+		static struct timespec _zpwarn_last;
+		static int _zpwarn_have_last = 0;
+		long _since_last_us = 1000001;
+		if (_zpwarn_have_last) {
+			_since_last_us = (_zp_t1.tv_sec  - _zpwarn_last.tv_sec)  * 1000000L
+			                + (_zp_t1.tv_nsec - _zpwarn_last.tv_nsec) / 1000L;
+		}
+		if (_since_last_us >= 1000000) {
+			double _t_since_start = (_zp_t1.tv_sec - _zp_epoch.tv_sec)
+			                       + (_zp_t1.tv_nsec - _zp_epoch.tv_nsec) / 1e9;
+			fprintf(stderr, "t=%.2fs zbitx_poll: %ldus (fields_sent=%d)\n",
+			        _t_since_start, _zp_us, count);
+			_zpwarn_last = _zp_t1;
+			_zpwarn_have_last = 1;
+		}
+	}
 }
 
 void zbitx_init(){
@@ -7017,6 +6964,14 @@ void zbitx_init(){
 	if (!e){
 		printf("zBitx front panel detected\n");
 		zbitx_available = 1;
+	}
+	else{
+		// TEMP DEBUG: this was failing completely silently before --
+		// zbitx_available stayed 0 and nothing downstream (zbitx_poll,
+		// power/vswr updates) ever ran, with no indication why.
+		fprintf(stderr, "zbitx_init: front panel NOT detected (i2cbb_write_i2c_block_data returned %d)\n", e);
+	}
+	if (zbitx_available){
 
 
  		e = i2cbb_write_i2c_block_data (ZBITX_I2C_ADDRESS, '{', 
@@ -7368,10 +7323,6 @@ gboolean ui_tick(gpointer gook)
 			gdk_window_set_cursor(gdk_get_default_root_window(), new_cursor);
 		}
 #endif
-		if (has_ina260 == 1)
-		{
-			check_read_ina260_cadence(&voltage, &current);
-		}
 
 		ticks = 0;
 	}
@@ -8408,6 +8359,13 @@ void cmd_exec(char *cmd)
 		sprintf(output, "BFO %d offset = %d\n", get_bfo_offset(), result);
 		write_console(FONT_LOG, output);
 	}
+	// the #vswr field's on-screen label is "REF", not "VSWR", so the
+	// generic label-matching dispatch below can never route the Pico's
+	// "vswr N" command to it -- handle it explicitly.
+	else if (!strcmp(exec, "vswr"))
+	{
+		set_field("#vswr", args);
+	}
 	//'Band scale' setting to adjust scale for easier adjustment for tuning power output - n1qm
 	else if (!strcmp(exec, "bs"))
 	{
@@ -8716,22 +8674,20 @@ int main(int argc, char *argv[])
 	if (zbitx_available)
 		zbitx_poll(1); // send all the field values
 
-	//switch to maximum priority
+	// NOTE: This used to set SCHED_FIFO max priority on the GTK/UI thread,
+	// which put it at equal real-time priority with the audio thread in
+	// sbitx_sound.c. Two SCHED_FIFO threads at the same priority don't get
+	// time-sliced against each other — whichever one is running keeps the
+	// CPU until it blocks or yields. That let long Cairo/waterfall redraws
+	// stall the audio thread for 8-10ms+ at a time, causing ALSA underruns
+	// and raspy CW audio. The UI thread doesn't need real-time scheduling;
+	// only the audio thread does.
 	struct sched_param sch;
-	sch.sched_priority = sched_get_priority_max(SCHED_FIFO);
-	pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch);
-
-	// Configure the INA260
-	configure_ina260();
+	sch.sched_priority = 0;
+	pthread_setschedparam(pthread_self(), SCHED_OTHER, &sch);
 
 	initialize_macro_selection();
 
-	// Read voltage and current
-	// read_voltage_current(&voltage, &current);
-
-	// Print the results
-	// printf("Voltage: %.3f V\n", voltage);
-	// printf("Current: %.3f A\n", current);
 
 	// test to pass values to eq
 	//   modify_eq_band_frequency(&tx_eq, 3, 1505.0);
