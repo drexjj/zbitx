@@ -103,7 +103,7 @@ void remote_slice() {
             while ((nl = strchr(start, '\n')) != NULL) {
                 *nl = '\0';
                 if (nl > start && *(nl-1) == '\r') *(nl-1) = '\0';  // cr or line feed
-                printf("Received on remote : [%s]\n", start);
+                //printf("Received on remote : [%s]\n", start);
                 if (start[0] == '?') {
                     char response[2000];
                     get_field_value_by_label(start + 1, response);
