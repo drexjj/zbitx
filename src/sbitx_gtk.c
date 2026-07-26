@@ -22,12 +22,17 @@ The initial sync between the gui values, the core radio values, settings, et al 
 #include <gdk/gdkkeysyms.h>
 #include <gdk/gdkx.h>
 #include <gtk/gtkx.h>
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <cairo.h>
 #include <sys/file.h>
+#include <errno.h>
+#include <sys/file.h>
+#include <string.h>
+#include <errno.h>
 #include <wiringPi.h>
 #include <wiringSerial.h>
 #include "sdr.h"
@@ -4406,15 +4411,9 @@ void update_titlebar()
 
 	time_t now = time_sbitx();
 	struct tm *tmp = gmtime(&now);
-	if (has_ina260 == 1)
+	if (vbatt_raw > 0)
 	{
-		sprintf(buff, "BATT: %.2fV / %.2fA  %s  %s  %s  %04d/%02d/%02d  %02d:%02d:%02dZ",
-				voltage, current, VER_STR, get_field("#mycallsign")->value, get_field("#mygrid")->value,
-				tmp->tm_year + 1900, tmp->tm_mon + 1, tmp->tm_mday, tmp->tm_hour, tmp->tm_min, tmp->tm_sec);
-	}
-	else if (vbatt_raw > 0)
-	{
-		/* Show voltage from the RP2040 front panel when INA260 is not fitted */
+		/* Show voltage from the RP2040 front panel */
 		sprintf(buff, "Batt: %.2fV  %s  %s  %s  %04d/%02d/%02d  %02d:%02d:%02dZ",
 				(float)vbatt_raw * VBATT_SCALE,
 				VER_STR, get_field("#mycallsign")->value, get_field("#mygrid")->value,
@@ -6304,7 +6303,6 @@ void rtc_sync()
 	rtc_write(t_utc->tm_year + 1900, t_utc->tm_mon + 1, t_utc->tm_mday,
 			  t_utc->tm_hour, t_utc->tm_min, t_utc->tm_sec);
 }
-
 
 
 
