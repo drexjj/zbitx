@@ -8604,6 +8604,7 @@ int main(int argc, char *argv[])
 	char *path = getenv("HOME");
 	strcpy(directory, path);
 	strcat(directory, "/sbitx/data/user_settings.ini");
+	initialize_macro_selection();
 	if (ini_parse(directory, user_settings_handler, NULL) < 0)
 	{
 		printf("Unable to load ~/sbitx/data/user_settings.ini\n"
@@ -8684,7 +8685,8 @@ int main(int argc, char *argv[])
 	sch.sched_priority = 0;
 	pthread_setschedparam(pthread_self(), SCHED_OTHER, &sch);
 
-	initialize_macro_selection();
+	// moved initialization up ahead of the first time it gets checked
+	//initialize_macro_selection();
 
 
 	// test to pass values to eq
