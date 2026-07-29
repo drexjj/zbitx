@@ -6816,14 +6816,27 @@ void zbitx_poll(int all){
 			strlen(remote_cmd), remote_cmd);
 	}
 
+	// The spectrum push below is a bit-banged I2C write (spectrum bins
+	// serialized to text) and is the single most expensive thing this
+	// function does. During CW/CWR TX, modem_poll() is being
+	// called on *every* ui_tick() to keep up with the keyer on this same
+	// GTK thread. Blocking that thread for during the spectrum
+	// push reintroduces the paddle-timing problem that
+	// was just fixed in modem_cw.c. There is no useful spectrum display
+	// while sending CW, so skip the push when transmitting CW/CWR.
+	int _zp_mode = mode_id(get_field("r1:mode")->value);
+	int _zp_cw_tx = in_tx && (_zp_mode == MODE_CW || _zp_mode == MODE_CWR);
 
-	zbitx_get_spectrum(buff);
-	strcat(buff, "}"); //terminate the block
-	//spectrum can be lost mometarily, it is alright	
-	delay(1);
-	i2cbb_write_i2c_block_data(0x0a, '{', strlen(buff), buff);
+	if (!_zp_cw_tx) {
+		zbitx_get_spectrum(buff);
+		strcat(buff, "}"); //terminate the block
+		//spectrum can be lost mometarily, it is alright	
+		delay(1);
+		i2cbb_write_i2c_block_data(0x0a, '{', strlen(buff), buff);
+	}
 
-	//transmit in_tx
+	//transmit in_tx -- always sent; small (~15 bytes) and the remote
+	//display needs it to know we're keying regardless of spectrum state
 	sprintf(buff, "IN_TX %d}", in_tx);
 	delay(1);
 	i2cbb_write_i2c_block_data(0x0a, '{', strlen(buff), buff);
@@ -7191,6 +7204,26 @@ gboolean ui_tick(gpointer gook)
 			modem_poll(mode_id(get_field("r1:mode")->value));
 	}
 
+	// zbitx_poll() talks to the remote display over bit-banged I2C and can
+	// block the GTK thread for a non-trivial time. 
+	// Give it its own period, decoupled from wf_spd, and back off hard
+	// during CW/CWR TX so it stays out of modem_poll()'s way.
+	{
+		static int zbitx_poll_ticks = 0;
+		int zbitx_mode = mode_id(get_field("r1:mode")->value);
+		int zbitx_poll_period = 100; // normal cadence
+
+		if (in_tx && (zbitx_mode == MODE_CW || zbitx_mode == MODE_CWR))
+			zbitx_poll_period = 500; // keying CW: leave the GTK thread alone
+
+		zbitx_poll_ticks++;
+		if (zbitx_available && zbitx_poll_ticks >= zbitx_poll_period)
+		{
+			zbitx_poll(0);
+			zbitx_poll_ticks = 0;
+		}
+	}
+
 	int tick_count = 100;
 
 	switch (mode_id(field_str("MODE")))
@@ -7234,10 +7267,9 @@ gboolean ui_tick(gpointer gook)
 
 		char response[6], cmd[10];
 		cmd[0] = 1;
-		
-		// zbitx
-		if (zbitx_available)
-			zbitx_poll(0);
+
+		// zbitx_poll() now runs on its own independent, CW-aware schedule
+		// above -- see the block right after the modem_poll() calls.
 
 		{
 			char buff[20];
