@@ -6755,16 +6755,11 @@ void zbitx_poll(int all){
 	char buff[3000];
 	static unsigned int last_update = 0;
 
-	// --- Timing instrumentation: is zbitx_poll() itself a source of the
-	// ~once/sec, ~25-30ms audio-thread stalls seen via sound_loop's
-	// "loop period long" warning? This runs on the GTK thread and does
+	// timing instrumentation here is to determine if zbitx_poll() 
+	// is a source of the~once/sec, ~25-30ms audio-thread stalls in sound_loop.
+	// This runs on the GTK thread and does
 	// bit-banged I2C (CPU-spinning busy-waits, not sleeps) for every
-	// changed field, potentially with retries. It no longer shares a lock
-	// with the audio thread (read_power() -- the old audio-side i2cbb
-	// caller -- is dead code on this hardware), but the busy-spinning
-	// could still be stealing CPU cycles from the audio thread's core.
-	// Reports only when this call takes long enough to matter, rate
-	// limited to ~1/sec so the print itself can't skew the measurement.
+	// changed field, potentially with retries. 
 	struct timespec _zp_t0, _zp_t1;
 	clock_gettime(CLOCK_MONOTONIC, &_zp_t0);
 	static struct timespec _zp_epoch;
@@ -6777,29 +6772,45 @@ void zbitx_poll(int all){
 	int retry;
 	unsigned int this_time = millis();
 
-	for (int i = 0; active_layout[i].cmd[0] > 0; i++){
-		struct field *f = active_layout+i;
-		if (!strcmp(f->label, "WATERFALL") || !strcmp(f->label, "SPECTRUM"))
-			continue;
-		if (all || f->updated_at >  last_update){
-			sprintf(buff, "%s %s}", f->label, f->value);
-			retry = 3;
-			do {
-				e = i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(buff), buff);
-				if (!e){
-					if (retry < 3)
-						printf("Sucess on %d\n", retry);
-					break;
-				}
-				delay(3);
-				printf("Retrying I2C %d\n", retry);
-			}while(retry--);
-			f->update_remote = 0;
-			count++;
-			delay(10);
+	// Computed once, up front, so both the per-field push loop below and the
+	// spectrum push further down share the same CW-TX gate. Measured (Evan, AC9TU
+	// pre-fix): 52-66ms/call with fields_sent=2 -- i.e. this loop's
+	// unconditional delay(10) per pushed field (plus up to delay(3) per
+	// retry) was already most of the cost even before the spectrum push.
+	// After gating just the spectrum push, calls were still 29-44ms, which
+	// is squarely in the range 2 fields * delay(10) (+ retries) would cost.
+	// Nobody is watching the remote display's field values while actively
+	// keying CW/CWR either, so defer them the same way: don't push, and
+	// don't advance last_update, so the next non-CW-TX call catches up
+	// everything that changed while we were transmitting.
+	int _zp_mode = mode_id(get_field("r1:mode")->value);
+	int _zp_cw_tx = in_tx && (_zp_mode == MODE_CW || _zp_mode == MODE_CWR);
+
+	if (!_zp_cw_tx) {
+		for (int i = 0; active_layout[i].cmd[0] > 0; i++){
+			struct field *f = active_layout+i;
+			if (!strcmp(f->label, "WATERFALL") || !strcmp(f->label, "SPECTRUM"))
+				continue;
+			if (all || f->updated_at >  last_update){
+				sprintf(buff, "%s %s}", f->label, f->value);
+				retry = 3;
+				do {
+					e = i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(buff), buff);
+					if (!e){
+						if (retry < 3)
+							printf("Sucess on %d\n", retry);
+						break;
+					}
+					delay(3);
+					printf("Retrying I2C %d\n", retry);
+				}while(retry--);
+				f->update_remote = 0;
+				count++;
+				delay(10);
+			}
 		}
+		last_update = this_time;
 	}
-	last_update = this_time;
 	
 	//check if the console q has any new updates
 	while (q_length(&q_zbitx_console) > 0){
@@ -6816,17 +6827,17 @@ void zbitx_poll(int all){
 			strlen(remote_cmd), remote_cmd);
 	}
 
-	// The spectrum push below is a bit-banged I2C write (spectrum bins
-	// serialized to text) and is the single most expensive thing this
-	// function does. During CW/CWR TX, modem_poll() is being
-	// called on *every* ui_tick() to keep up with the keyer on this same
-	// GTK thread. Blocking that thread for during the spectrum
-	// push reintroduces the paddle-timing problem that
-	// was just fixed in modem_cw.c. There is no useful spectrum display
-	// while sending CW, so skip the push when transmitting CW/CWR.
-	int _zp_mode = mode_id(get_field("r1:mode")->value);
-	int _zp_cw_tx = in_tx && (_zp_mode == MODE_CW || _zp_mode == MODE_CWR);
 
+	// The spectrum push is a bulky bit-banged I2C write (spectrum bins
+	// serialized to text) and is the single most expensive thing this
+	// function does During CW/CWR TX, modem_poll() is being
+	// called on *every* ui_tick() to keep up with the keyer, on this same
+	// GTK thread. Blocking that thread here for the duration of a spectrum
+	// push directly reintroduces the paddle-timing staleness problem that
+	// was fixed in modem_cw.c. Skip updating the spectrum display
+	// while sending CW, so the display just keeps its last
+	// frame whenever we're actively transmitting CW/CWR.
+	// _zp_cw_tx was already computed above, before the per-field push loop.
 	if (!_zp_cw_tx) {
 		zbitx_get_spectrum(buff);
 		strcat(buff, "}"); //terminate the block
@@ -6835,8 +6846,8 @@ void zbitx_poll(int all){
 		i2cbb_write_i2c_block_data(0x0a, '{', strlen(buff), buff);
 	}
 
-	//transmit in_tx -- always sent; small (~15 bytes) and the remote
-	//display needs it to know we're keying regardless of spectrum state
+	// we want to keep the IN_TX notification correct even in TX per JJ
+	// transmit in_tx - display needs it to know we're keying regardless of spectrum state
 	sprintf(buff, "IN_TX %d}", in_tx);
 	delay(1);
 	i2cbb_write_i2c_block_data(0x0a, '{', strlen(buff), buff);
@@ -7004,10 +7015,6 @@ void zbitx_init(){
 		}
 	}
 }
-
-
-
-
 
 // Long press Volume control to reveal the EQ settings -W2JON
 extern void focus_field(struct field *f);
@@ -7205,8 +7212,11 @@ gboolean ui_tick(gpointer gook)
 	}
 
 	// zbitx_poll() talks to the remote display over bit-banged I2C and can
-	// block the GTK thread for a non-trivial time. 
-	// Give it its own period, decoupled from wf_spd, and back off hard
+	// block the GTK thread (the spectrum push in
+	// particular). It used to get called on the same wf_spd-derived tick_count as
+	// the local spectrum/waterfall widgets below, which meant a fast
+	// waterfall speed setting.
+	// Give it its own timer period, decoupled from wf_spd, and back off hard
 	// during CW/CWR TX so it stays out of modem_poll()'s way.
 	{
 		static int zbitx_poll_ticks = 0;
