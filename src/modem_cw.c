@@ -1350,23 +1350,36 @@ void cw_init(){
 	cw_envelope_pos = 0;
 }
 
+// WPM, PITCH, CW_DELAY and the keyer input method are operator-set values
+// Refresh them on a slower cadence (FIELD_POLL_PERIOD ms) and cache them
+#define FIELD_POLL_PERIOD 20
 void cw_poll(int bytes_available, int tx_is_on){
+	static int field_poll_ticks = 0;
+	static int wpm = 12;
+	static int cached_input_method = CW_IAMBIC;
+
 	cw_bytes_available = bytes_available;
-	cw_key_state = key_poll();
-	int wpm  = field_int("WPM");
+
+	if (field_poll_ticks == 0) {
+		wpm = field_int("WPM");
+		cw_delay_ms = get_cw_delay();
+		cached_input_method = get_cw_input_method();
+
+		//retune the rx pitch if needed
+		int cw_rx_pitch = field_int("PITCH");
+		if (cw_rx_pitch != decoder.signal.freq)
+			cw_rx_bin_init(&decoder.signal, cw_rx_pitch, N_BINS, SAMPLING_FREQ);
+
+		// check if the wpm has changed
+		if (wpm != decoder.wpm){
+			decoder.wpm = wpm;
+			decoder.dash_len = (18 * SAMPLING_FREQ) / (5 * N_BINS* wpm);
+		}
+	}
+	field_poll_ticks = (field_poll_ticks + 1) % FIELD_POLL_PERIOD;
+
+	cw_key_state = key_poll(cached_input_method);
 	cw_period = (12 * 9600)/wpm;
-	cw_delay_ms = get_cw_delay();
-
-	//retune the rx pitch if needed
-	int cw_rx_pitch = field_int("PITCH");
-	if (cw_rx_pitch != decoder.signal.freq)
-		cw_rx_bin_init(&decoder.signal, cw_rx_pitch, N_BINS, SAMPLING_FREQ);
-
-	// check if the wpm has changed
-	if (wpm != decoder.wpm){
-		decoder.wpm = wpm;
-		decoder.dash_len = (18 * SAMPLING_FREQ) / (5 * N_BINS* wpm); 
-	}	
 
 	// TX ON if bytes are avaiable (from macro/keyboard) or key is pressed
 	// of we are in the middle of symbol (dah/dit) transmission 
@@ -1374,8 +1387,8 @@ void cw_poll(int bytes_available, int tx_is_on){
 	if (!tx_is_on && (cw_bytes_available || cw_key_state || (symbol_next && *symbol_next)) > 0){
 		tx_on(TX_SOFT);
 		millis_now = millis();
-		cw_tx_until = get_cw_delay() + millis_now;
-		cw_mode = get_cw_input_method();
+		cw_tx_until = cw_delay_ms + millis_now;
+		cw_mode = cached_input_method;
 	}
 	else if (tx_is_on && cw_tx_until < millis_now){
 			tx_off();
