@@ -6306,10 +6306,9 @@ void rtc_sync()
 
 
 
-int key_poll() {
+int key_poll(int input_method) {
   int key = CW_IDLE;
-  int input_method = get_cw_input_method();
- 
+
   // Handle straight key input
   if (input_method == CW_STRAIGHT) {
     if ((digitalRead(PTT) == LOW) || (digitalRead(DASH) == LOW)) {
