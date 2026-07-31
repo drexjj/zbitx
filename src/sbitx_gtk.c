@@ -7222,8 +7222,9 @@ gboolean ui_tick(gpointer gook)
 		int zbitx_mode = mode_id(get_field("r1:mode")->value);
 		int zbitx_poll_period = 100; // normal cadence
 
-		if (in_tx && (zbitx_mode == MODE_CW || zbitx_mode == MODE_CWR))
-			zbitx_poll_period = 500; // keying CW: leave the GTK thread alone
+		// update zbitx display much less often in CW or CWR modes
+		if (zbitx_mode == MODE_CW || zbitx_mode == MODE_CWR)
+			zbitx_poll_period = 500; // in CW/CWR (RX or TX): leave the GTK thread alone
 
 		zbitx_poll_ticks++;
 		if (zbitx_available && zbitx_poll_ticks >= zbitx_poll_period)
