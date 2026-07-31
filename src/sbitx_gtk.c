@@ -7286,11 +7286,14 @@ gboolean ui_tick(gpointer gook)
 
 			/* fwdpower and vswr are now set by the RP2040 parser in zbitx_poll().
 			 * Push them to the display fields on every tick cycle, not just in_tx,
-			 * so the meter returns to zero correctly when we stop transmitting. */
+			 * so the meter returns to zero correctly when we stop transmitting. 
+			 * Only call set_field() when the value has actually moved. */
 			sprintf(buff, "%d", in_tx ? fwdpower : 0);
-			set_field("#fwdpower", buff);
+			if (strcmp(get_field("#fwdpower")->value, buff))
+				set_field("#fwdpower", buff);
 			sprintf(buff, "%d", in_tx ? vswr : 10);  /* 10 = SWR 1.0 when RX */
-			set_field("#vswr", buff);
+			if (strcmp(get_field("#vswr")->value, buff))
++				set_field("#vswr", buff);
 		}
 		if (layout_needs_refresh)
 		{
