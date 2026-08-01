@@ -561,6 +561,8 @@ void handle_cw_state_machine(uint8_t state_machine_mode, uint8_t symbol_now) {
       break; // exit CW_DOT case
     case CW_DASH:
       if (symbol_now == CW_IDLE) {
+		keyup_count = cw_envelope_pos;  // ramp down from wherever we are
+        keydown_count = 0;
         cw_current_symbol = CW_IDLE;
       }
       if (symbol_now == CW_DOT) {
