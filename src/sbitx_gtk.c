@@ -6759,12 +6759,14 @@ void zbitx_poll(int all){
 	// This runs on the GTK thread and does
 	// bit-banged I2C (CPU-spinning busy-waits, not sleeps) for every
 	// changed field, potentially with retries. 
+	/*
 	struct timespec _zp_t0, _zp_t1;
 	clock_gettime(CLOCK_MONOTONIC, &_zp_t0);
 	static struct timespec _zp_epoch;
 	static int _zp_have_epoch = 0;
 	if (!_zp_have_epoch) { _zp_epoch = _zp_t0; _zp_have_epoch = 1; }
-	// --- end timing preamble ---
+	*/
+	// --- end timing startup ---
 
 	int count = 0;
 	int e = 0;
@@ -6953,6 +6955,7 @@ void zbitx_poll(int all){
 	zbitx_poll_done:
 	last_update = this_time;
 
+	/*  this block printed zbitx_poll() timing data during debug
 	clock_gettime(CLOCK_MONOTONIC, &_zp_t1);
 	long _zp_us = (_zp_t1.tv_sec - _zp_t0.tv_sec) * 1000000L
 	            + (_zp_t1.tv_nsec - _zp_t0.tv_nsec) / 1000L;
@@ -6973,6 +6976,7 @@ void zbitx_poll(int all){
 			_zpwarn_have_last = 1;
 		}
 	}
+	*/
 }
 
 void zbitx_init(){
@@ -6987,7 +6991,7 @@ void zbitx_init(){
 		zbitx_available = 1;
 	}
 	else{
-		// TEMP DEBUG: this was failing completely silently before --
+		// this was failing completely silently before --
 		// zbitx_available stayed 0 and nothing downstream (zbitx_poll,
 		// power/vswr updates) ever ran, with no indication why.
 		fprintf(stderr, "zbitx_init: front panel NOT detected (i2cbb_write_i2c_block_data returned %d)\n", e);
