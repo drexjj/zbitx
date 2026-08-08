@@ -368,15 +368,13 @@ void spectrum_update()
 	// someone wants to try I Q channels
 	// in hardware
 
-	// this has been hand optimized to lower
-	// the inordinate cpu usage
-	// now adjusted to adapt to different center_bin value
-	int spectrum_update_pitch_offset = 0;
-	if (rx_list->mode == MODE_CW)
-		spectrum_update_pitch_offset = (int)((get_pitch() / 46.875) + 0.5);
-	else if (rx_list->mode == MODE_CWR)
-		spectrum_update_pitch_offset = -(int)((get_pitch() / 46.875) + 0.5);
-	int spectrum_update_start = MAX_BINS - tx_shift - spectrum_update_pitch_offset - 267;
+  // adjusted to adapt to different center_bin value
+	//
+	// I think this is the traditional convention (reverted from the pitch-cancelling
+	// "spectrum analyzer" behavior): a zero-beat CW/CWR signal shows its
+	// peak offset from the needle by PITCH, same as the audible tone --
+	// the visible/audible coincidence is the zero-beat cue
+	int spectrum_update_start = MAX_BINS - tx_shift - 267;
 	int spectrum_update_end = spectrum_update_start + 534;
 	for (int i = spectrum_update_start; i < spectrum_update_end; i++)
 	{
