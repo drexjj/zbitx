@@ -3154,12 +3154,8 @@ if (!strcmp(field_str("SMETEROPT"), "ON") &&
 	// the center frequency is at the center of the lower sideband,
 	// i.e, three-fourth way up the bins.
 	// get starting bin correct even when tx_shift is not 512
-	int pitch_bin_offset = 0;
-	if (rx_list->mode == MODE_CW)
-		pitch_bin_offset = (int)((get_pitch() / 46.875) + 0.5);
-	else if (rx_list->mode == MODE_CWR)
-		pitch_bin_offset = -(int)((get_pitch() / 46.875) + 0.5);
-	int starting_bin = MAX_BINS - get_tx_shift() - pitch_bin_offset - n_bins / 2;
+
+	int starting_bin = MAX_BINS - get_tx_shift() - n_bins / 2;
 	int ending_bin = starting_bin + n_bins;
 
 	float x_step = (1.0 * f->width) / n_bins;
@@ -6680,12 +6676,8 @@ void zbitx_get_spectrum(char *buff){
   int n_bins = (int)((1.0 * spectrum_span) / 46.875);
   //the center frequency is at the center of the lower sideband,
   //i.e, three-fourth way up the bins.
-  int pitch_bin_offset = 0;
-  if (rx_list->mode == MODE_CW)
-    pitch_bin_offset = (int)((get_pitch() / 46.875) + 0.5);
-  else if (rx_list->mode == MODE_CWR)
-    pitch_bin_offset = -(int)((get_pitch() / 46.875) + 0.5);
-  int starting_bin = MAX_BINS - get_tx_shift() - pitch_bin_offset - n_bins / 2;
+
+  int starting_bin = MAX_BINS - get_tx_shift() - n_bins / 2;
   int ending_bin = starting_bin + n_bins;
 
   int j;
