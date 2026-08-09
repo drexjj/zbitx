@@ -2033,7 +2033,7 @@ static void read_hw_ini()
 */
 void set_tx_power_levels()
 {
-	 printf("Setting tx_power drive to %d\n", tx_drive);
+	// printf("Setting tx_power drive to %d\n", tx_drive);
 	// int tx_power_gain = 0;
 
 	// search for power in the approved bands
@@ -2046,7 +2046,7 @@ void set_tx_power_levels()
 			tx_amp = (1.0 * tx_drive * band_power[i].scale);
 		}
 	}
-		printf("tx_amp is set to %g for %d drive\n", tx_amp, tx_drive);
+		//printf("tx_amp is set to %g for %d drive\n", tx_amp, tx_drive);
 	// we keep the audio card output 'volume' constant'
 	sound_mixer(audio_card, "Master", 100);
 	sound_mixer(audio_card, "Capture", tx_gain);
