@@ -8716,10 +8716,17 @@ int main(int argc, char *argv[])
 	if (zbitx_available)
 		zbitx_poll(1); // send all the field values
 
-	//switch to maximum priority
+	// NOTE: This used to set SCHED_FIFO max priority on the GTK/UI thread,
+	// which put it at equal real-time priority with the audio thread in
+	// sbitx_sound.c. Two SCHED_FIFO threads at the same priority don't get
+	// time-sliced against each other -- whichever one is running keeps the
+	// CPU until it blocks or yields. That let long Cairo/waterfall redraws
+	// stall the audio thread for 8-10ms+ at a time, causing ALSA underruns
+	// and raspy CW audio. The UI thread doesn't need real-time scheduling;
+	// only the audio thread does
 	struct sched_param sch;
-	sch.sched_priority = sched_get_priority_max(SCHED_FIFO);
-	pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch);
+	sch.sched_priority = 0;
+	pthread_setschedparam(pthread_self(), SCHED_OTHER, &sch);
 
 	// Configure the INA260
 	configure_ina260();
