@@ -258,7 +258,7 @@ time_t time_sbitx();
 #define CW_BUG 6
 #define CW_KBD 3
 
-int key_poll();
+int key_poll(int input_method);
 int key_poll2();
 int get_cw_delay();
 int	get_data_delay();
