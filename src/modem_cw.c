@@ -88,6 +88,7 @@
 #include "sdr_ui.h"
 #include "modem_cw.h"
 #include "sound.h"
+#include "si5351.h"
 
 struct morse_tx {
 	char c;
@@ -336,6 +337,8 @@ static float cw_envelope = 0.0f;   // current envelope amplitude
 static int cw_envelope_pos = 0;    // position within cw_envelope_data[]
 static int cw_tx_until = 0;        // delay switching to rx, expect more txing
 static int data_tx_until = 0;
+
+static volatile int bfo_want_on = 1;  // a flag to shut down osc at end of TX
 static int cached_pitch = 0;       // seeded in cw_init() to avoid a spurious
                                     // 0 Hz retune on the very first idle sample
 
@@ -483,7 +486,13 @@ float cw_tx_get_sample() {
       }
   }
   sample = ((vfo_read(&cw_tone) / FLOAT_SCALE) * cw_envelope) / 8;
-  
+
+  // BFO only needs to go quiet once nothing is left to send at all --
+  // mid-message inter-element/inter-character gaps are left alone here
+
+  bfo_want_on = (keydown_count > 0) || (keyup_count > 0) ||
+                (cw_bytes_available > 0) || (symbol_next && *symbol_next);
+
   // keep extending 'cw_tx_until' while we're sending
   if ((symbol_now == CW_DOWN) || (symbol_now == CW_DOT) ||
       (symbol_now == CW_DASH) || (symbol_now == CW_SQUEEZE) ||
@@ -1394,6 +1403,23 @@ void cw_poll(int bytes_available, int tx_is_on){
 	}
 	else if (tx_is_on && cw_tx_until < millis_now){
 			tx_off();
+	}
+	// Service the BFO mute request set by cw_tx_get_sample(). Only acts
+	// while actually transmitting; the else branch is a safety net that
+	// forces the BFO back on the moment we drop out of TX, in case
+	// bfo_want_on was ever left stuck at 0.
+	static int bfo_is_on = 1;
+	if (tx_is_on) {
+		if (bfo_want_on != bfo_is_on) {
+			if (bfo_want_on)
+				si5351_bfo_on();
+			else
+				si5351_bfo_off();
+			bfo_is_on = bfo_want_on;
+		}
+	} else if (!bfo_is_on) {
+		si5351_bfo_on();
+		bfo_is_on = 1;
 	}
 }
 
