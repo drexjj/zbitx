@@ -8725,8 +8725,8 @@ int main(int argc, char *argv[])
 	// and raspy CW audio. The UI thread doesn't need real-time scheduling;
 	// only the audio thread does
 	struct sched_param sch;
-	sch.sched_priority = sched_get_priority_max(SCHED_FIFO);
-	pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch);
+	sch.sched_priority = 0;
+	pthread_setschedparam(pthread_self(), SCHED_OTHER, &sch);
 	
 	// Configure the INA260
 	configure_ina260();
