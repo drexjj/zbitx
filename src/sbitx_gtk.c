@@ -3165,7 +3165,7 @@ if (!strcmp(field_str("SMETEROPT"), "ON") &&
 	int n_bins = (int)((1.0 * spectrum_span) / 46.875);
 	// the center frequency is at the center of the lower sideband,
 	// i.e, three-fourth way up the bins.
-	int starting_bin = (3 * MAX_BINS) / 4 - n_bins / 2;
+	int starting_bin = MAX_BINS - get_tx_shift() - n_bins / 2;
 	int ending_bin = starting_bin + n_bins;
 
 	float x_step = (1.0 * f->width) / n_bins;
@@ -3323,7 +3323,9 @@ if (!strcmp(field_str("SMETEROPT"), "ON") &&
 	// draw the needle
 	for (struct rx *r = rx_list; r; r = r->next)
 	{
-		int needle_x = (f->width * (MAX_BINS / 2 - r->tuned_bin)) / (MAX_BINS / 2);
+		//int needle_x = (f->width * (MAX_BINS / 2 - r->tuned_bin)) / (MAX_BINS / 2);
+		// center display even when tuned bin is not 512
+		int needle_x = (f->width / 2) + (f->width * (get_tx_shift() - r->tuned_bin)) / (MAX_BINS / 2);
 		fill_rect(gfx, f->x + needle_x, f->y, 1, grid_height, SPECTRUM_NEEDLE);
 	}
 }
@@ -6685,7 +6687,7 @@ void web_get_spectrum(char *buff)
 	int n_bins = (int)((1.0 * spectrum_span) / 46.875);
 	// the center frequency is at the center of the lower sideband,
 	// i.e, three-fourth way up the bins.
-	int starting_bin = (3 * MAX_BINS) / 4 - n_bins / 2;
+	int starting_bin = MAX_BINS - get_tx_shift() - n_bins / 2;
 	int ending_bin = starting_bin + n_bins;
 
 	int j = 3;
@@ -6800,7 +6802,10 @@ void zbitx_get_spectrum(char *buff){
   int n_bins = (int)((1.0 * spectrum_span) / 46.875);
   //the center frequency is at the center of the lower sideband,
   //i.e, three-fourth way up the bins.
-  int starting_bin = (3 *MAX_BINS)/4 - n_bins/2;
+  //
+  // Traditional convention: PITCH intentionally not cancelled here --
+  // see the matching comment in spectrum_update() in sbitx.c.
+  int starting_bin = MAX_BINS - get_tx_shift() - n_bins/2;
   int ending_bin = starting_bin + n_bins;
 
   int j;
