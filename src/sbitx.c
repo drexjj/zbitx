@@ -29,7 +29,7 @@
 int bandtweak = 4;		// Band power array index the \bs command will target -n1qm
 int ext_ptt_enable = 0; // ADDED BY KF7YDU.
 char audio_card[32];
-static int tx_shift = 512;
+static int tx_shift = 600;  // old default was 512
 parametriceq tx_eq;
 parametriceq rx_eq;
 
@@ -117,6 +117,12 @@ double notch_freq = 0;		   // Notch frequency in Hz W2JON
 double notch_bandwidth = 0;	   // Notch bandwidth in Hz W2JON
 int compression_control_level; // Audio Compression level W2JON
 int txmon_control_level;	   // TX Monitor level W2JON
+
+// share the current tx_shift value for spectrum and WF display purposes
+int get_tx_shift(void) {
+	return tx_shift;
+}
+
 int get_rx_gain(void)
 {
 	// printf("rx_gain %d\n", rx_gain);
@@ -314,9 +320,18 @@ void spectrum_update()
 
 	// this has been hand optimized to lower
 	// the inordinate cpu usage
-	for (int i = 1269; i < 1803; i++)
+	// adjusted to adapt to different center_bin value
+	//
+	// Traditional convention (reverted from the pitch-cancelling
+	// "spectrum analyzer" behavior): a zero-beat CW/CWR signal shows its
+	// peak offset from the needle by PITCH, same as the audible tone --
+	// the visible/audible coincidence is the zero-beat cue. Not tied to
+	// the true-frequency-at-needle behavior we prototyped and decided
+	// against.
+	int spectrum_update_start = MAX_BINS - tx_shift - 267;
+	int spectrum_update_end = spectrum_update_start + 534;
+	for (int i = spectrum_update_start; i < spectrum_update_end; i++)
 	{
-
 		fft_bins[i] = ((1.0 - spectrum_speed) * fft_bins[i]) +
 					  (spectrum_speed * cabs(fft_spectrum[i]));
 
