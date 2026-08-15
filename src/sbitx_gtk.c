@@ -6920,7 +6920,7 @@ void zbitx_poll(int all){
 	int e = 0;
 	int retry;
 
-	#define ZBITX_MAX_FIELDS_PER_POLL 10
+	#define ZBITX_MAX_FIELDS_PER_POLL 20
 	static int scan_pos = 0;   // persists across calls -- resume where we left off
 
 	int n_fields = 0;
