@@ -2236,12 +2236,22 @@ void draw_modulation(struct field *f, cairo_t *gfx)
 
 	int rd = mod_display_front; // snapshot once; keep reading this buffer for the whole draw
 	int n_env_samples = sizeof(mod_display_buf[rd]) / sizeof(int32_t);
+	int n_pairs = n_env_samples / 2;
+	// mod_display_index (a plain int, only ever written by the audio thread)
+	// points at the pair that's about to be overwritten next -- i.e. the
+	// OLDEST pair still valid in the buffer. Reading raw array order (0..N)
+	// instead would stitch "freshest" data next to "oldest" data wherever
+	// the cursor happens to sit, producing a false discontinuity there.
+	// Offsetting by the cursor walks the buffer in true chronological
+	// order: oldest sample on the left, newest on the right.
+	int cursor_pair = (mod_display_index / 2) % n_pairs;
 	int h_center = f->y + grid_height / 2;
 	for (i = 0; i < f->width; i++)
 	{
-		int index = (i * n_env_samples) / f->width;
-		int min = mod_display_buf[rd][index++];
-		int max = mod_display_buf[rd][index++];
+		int pair = (cursor_pair + (i * n_pairs) / f->width) % n_pairs;
+		int index = pair * 2;
+		int min = mod_display_buf[rd][index];
+		int max = mod_display_buf[rd][index + 1];
 		cairo_move_to(gfx, f->x + i, min + h_center);
 		cairo_line_to(gfx, f->x + i, max + h_center + 1);
 	}
