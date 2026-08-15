@@ -6945,11 +6945,13 @@ void zbitx_poll(int all){
 	}
 
 
-	zbitx_get_spectrum(buff);
-	strcat(buff, "}"); //terminate the block
-	//spectrum can be lost mometarily, it is alright	
-	delay(1);
-	i2cbb_write_i2c_block_data(0x0a, '{', strlen(buff), buff);
+	if (!in_tx) {
+		zbitx_get_spectrum(buff);
+		strcat(buff, "}"); //terminate the block
+		//spectrum can be lost mometarily, it is alright	
+		delay(1);
+		i2cbb_write_i2c_block_data(0x0a, '{', strlen(buff), buff);
+	}
 
 	//transmit in_tx
 	sprintf(buff, "IN_TX %d}", in_tx);
