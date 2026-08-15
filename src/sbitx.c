@@ -1794,8 +1794,18 @@ void tx_process(
 	/* read_power() calls removed: power/SWR data now comes from RP2040 front panel */
 	sdr_modulation_update(output_tx, MAX_BINS/2, tx_amp);
 
-	// Instead of using sdr_modulation_update, we'll update the spectrum data directly
-	// This allows the TX audio to be displayed in the spectrum and waterfall
+    // This block gives a richer TX spectrum/waterfall display, but does
+	// malloc()/free() plus a full extra forward FFT on every single call --
+	// fine for voice/digital modes (no sample-accurate timing requirement),
+	// but on a SCHED_FIFO real-time thread this is a direct source of
+	// audio-thread jitter for CW/CWR, where the envelope's timing precision
+	// matters on every element, not just at burst boundaries. Skip it
+	// entirely in CW/CWR; sdr_modulation_update() above already feeds the
+	// lightweight scope trace those modes actually need.
+	if (r->mode != MODE_CW && r->mode != MODE_CWR) {
+
+		// Instead of using sdr_modulation_update, we'll update the spectrum data directly
+		// This allows the TX audio to be displayed in the spectrum and waterfall
 	
 	// Create input buffer for FFT
 	complex float *tx_fft_in = (complex float *)malloc(sizeof(complex float) * MAX_BINS);
@@ -1890,6 +1900,8 @@ void tx_process(
 
 	// The old sdr_modulation_update function is still called for API compatibility
 	sdr_modulation_update(output_tx, MAX_BINS / 2, tx_amp);
+	
+	}   // end !CW/CWR gate
 }
 
 /*
