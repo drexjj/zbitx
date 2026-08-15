@@ -8653,6 +8653,7 @@ int main(int argc, char *argv[])
 	char *path = getenv("HOME");
 	strcpy(directory, path);
 	strcat(directory, "/sbitx/data/user_settings.ini");
+	initialize_macro_selection();  // do this before a user setting tries to set a macro
 	if (ini_parse(directory, user_settings_handler, NULL) < 0)
 	{
 		printf("Unable to load ~/sbitx/data/user_settings.ini\n"
@@ -8734,9 +8735,7 @@ int main(int argc, char *argv[])
 	pthread_setschedparam(pthread_self(), SCHED_OTHER, &sch);
 	
 	// Configure the INA260
-	configure_ina260();
-
-	initialize_macro_selection();
+	//configure_ina260();
 
 	// Read voltage and current
 	// read_voltage_current(&voltage, &current);
