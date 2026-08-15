@@ -6922,11 +6922,18 @@ void zbitx_poll(int all){
 	int retry;
 	unsigned int this_time = millis();
 
+	#define ZBITX_MAX_FIELDS_PER_POLL 10
+	int capped = 0;
+
 	for (int i = 0; active_layout[i].cmd[0] > 0; i++){
 		struct field *f = active_layout+i;
 		if (!strcmp(f->label, "WATERFALL") || !strcmp(f->label, "SPECTRUM"))
 			continue;
 		if (all || f->updated_at >  last_update){
+			if (count >= ZBITX_MAX_FIELDS_PER_POLL){
+				capped = 1;
+				break;      // stop here, remaining dirty fields caught next call(s)
+			}
 			sprintf(buff, "%s %s}", f->label, f->value);
 			retry = 3;
 			do {
@@ -6944,7 +6951,11 @@ void zbitx_poll(int all){
 			delay(10);
 		}
 	}
-	last_update = this_time;
+	// only advance the watermark once every currently-dirty field has actually
+	// been pushed -- otherwise a field we skipped this round would never get
+	// picked up again, since its updated_at would already be <= last_update
+	if (!capped)
+		last_update = this_time;
 	
 	//check if the console q has any new updates
 	while (q_length(&q_zbitx_console) > 0){
