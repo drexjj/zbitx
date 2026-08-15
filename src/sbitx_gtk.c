@@ -2158,6 +2158,12 @@ static void on_wf_call_button_click(GtkWidget *widget, gpointer data)
 // local for the rest of the function -- never re-read the global mid-loop.
 int mod_display_buf[2][MOD_MAX];
 static volatile int mod_display_front = 0; // index (0 or 1) of the buffer safe to read
+// The cursor (write position) that was current at the moment each buffer
+// was published. Indexed the same way as mod_display_buf, so a reader that
+// snapshots mod_display_front and then reads mod_display_cursor[rd] always
+// gets the cursor that actually matches that buffer's contents -- never a
+// fresher cursor racing ahead of an unpublished buffer.
+static int mod_display_cursor[2] = {0, 0};
 int mod_display_index = 0;
 
 void sdr_modulation_update(int32_t *samples, int count, double scale_up)
@@ -2190,6 +2196,7 @@ void sdr_modulation_update(int32_t *samples, int count, double scale_up)
 		samples++;
 	}
 	mod_display_index = idx;
+	mod_display_cursor[back] = idx; // tag this buffer with its own cursor before publishing it
 
 	// Publish: readers that read mod_display_front after this point get
 	// the fully-updated buffer; readers already mid-read of the old front
@@ -2244,7 +2251,7 @@ void draw_modulation(struct field *f, cairo_t *gfx)
 	// the cursor happens to sit, producing a false discontinuity there.
 	// Offsetting by the cursor walks the buffer in true chronological
 	// order: oldest sample on the left, newest on the right.
-	int cursor_pair = (mod_display_index / 2) % n_pairs;
+	int cursor_pair = (mod_display_cursor[rd] / 2) % n_pairs;
 	int h_center = f->y + grid_height / 2;
 	for (i = 0; i < f->width; i++)
 	{
