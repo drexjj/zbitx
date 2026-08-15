@@ -7288,6 +7288,37 @@ gboolean ui_tick(gpointer gook)
 			modem_poll(mode_id(get_field("r1:mode")->value));
 	}
 
+	// zbitx_poll() talks to the remote display over bit-banged I2C and can
+	// block the GTK thread (the per-field push loop in particular -- it
+	// unconditionally does delay(10) per dirty field, with retries at
+	// delay(3) each). It must never share a schedule with modem_poll(),
+	// which -- see immediately above -- runs on *every* ui_tick() during
+	// CW/CWR to keep up with the keyer. Sharing wf_spd-derived tick_count
+	// (as the block below does for the local spectrum/waterfall widgets)
+	// means a fast waterfall speed setting drags zbitx_poll() onto nearly
+	// every tick too, directly reintroducing the paddle-timing staleness
+	// problem fixed in modem_cw.c -- and since this runs for the whole
+	// duration of a CW TX burst, not just at start/end, it corrupts every
+	// element, not just the first and last.
+	// Give it its own timer period, decoupled from wf_spd, and back off
+	// hard during CW/CWR TX so it stays out of modem_poll()'s way.
+	{
+		static int zbitx_poll_ticks = 0;
+		int zbitx_mode = mode_id(get_field("r1:mode")->value);
+		int zbitx_poll_period = 100; // normal cadence
+
+		// update zbitx display much less often in CW or CWR modes
+		if (zbitx_mode == MODE_CW || zbitx_mode == MODE_CWR)
+			zbitx_poll_period = 500; // in CW/CWR (RX or TX): leave the GTK thread alone
+
+		zbitx_poll_ticks++;
+		if (zbitx_available && zbitx_poll_ticks >= zbitx_poll_period)
+		{
+			zbitx_poll(0);
+			zbitx_poll_ticks = 0;
+		}
+	}
+
 	int tick_count = 100;
 
 	switch (mode_id(field_str("MODE")))
@@ -7332,9 +7363,8 @@ gboolean ui_tick(gpointer gook)
 		char response[6], cmd[10];
 		cmd[0] = 1;
 		
-		// zbitx
-		if (zbitx_available)
-			zbitx_poll(0);
+		// zbitx_poll() now runs on its own independent, CW-aware schedule
+		// above -- see the block right after the modem_poll() calls.
 
 		{
 			char buff[20];
