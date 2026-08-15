@@ -328,7 +328,7 @@ void spectrum_update()
 	// the visible/audible coincidence is the zero-beat cue. Not tied to
 	// the true-frequency-at-needle behavior we prototyped and decided
 	// against.
-	int spectrum_update_start = MAX_BINS - tx_shift - 267;
+	int spectrum_update_start = (3 * MAX_BINS) / 4 - 267;
 	int spectrum_update_end = spectrum_update_start + 534;
 	for (int i = spectrum_update_start; i < spectrum_update_end; i++)
 	{
