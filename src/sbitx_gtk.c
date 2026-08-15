@@ -6917,45 +6917,44 @@ void zbitx_poll(int all){
 	char buff[3000];
 	static unsigned int last_update = 0;
 
-	int count = 0;
+int count = 0;
 	int e = 0;
 	int retry;
-	unsigned int this_time = millis();
 
 	#define ZBITX_MAX_FIELDS_PER_POLL 10
-	int capped = 0;
+	static int scan_pos = 0;   // persists across calls -- resume where we left off
 
-	for (int i = 0; active_layout[i].cmd[0] > 0; i++){
-		struct field *f = active_layout+i;
-		if (!strcmp(f->label, "WATERFALL") || !strcmp(f->label, "SPECTRUM"))
-			continue;
-		if (all || f->updated_at >  last_update){
-			if (count >= ZBITX_MAX_FIELDS_PER_POLL){
-				capped = 1;
-				break;      // stop here, remaining dirty fields caught next call(s)
+	int n_fields = 0;
+	while (active_layout[n_fields].cmd[0] > 0)
+		n_fields++;
+
+	int scanned = 0;
+	int i = scan_pos;
+	while (scanned < n_fields && count < ZBITX_MAX_FIELDS_PER_POLL){
+		struct field *f = active_layout + i;
+		if (strcmp(f->label, "WATERFALL") && strcmp(f->label, "SPECTRUM")){
+			if (all || f->update_remote){
+				sprintf(buff, "%s %s}", f->label, f->value);
+				retry = 3;
+				do {
+					e = i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(buff), buff);
+					if (!e){
+						if (retry < 3)
+							printf("Sucess on %d\n", retry);
+						break;
+					}
+					delay(3);
+					printf("Retrying I2C %d\n", retry);
+				}while(retry--);
+				f->update_remote = 0;
+				count++;
+				delay(10);
 			}
-			sprintf(buff, "%s %s}", f->label, f->value);
-			retry = 3;
-			do {
-				e = i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(buff), buff);
-				if (!e){
-					if (retry < 3)
-						printf("Sucess on %d\n", retry);
-					break;
-				}
-				delay(3);
-				printf("Retrying I2C %d\n", retry);
-			}while(retry--);
-			f->update_remote = 0;
-			count++;
-			delay(10);
 		}
+		i = (i + 1) % n_fields;
+		scanned++;
 	}
-	// only advance the watermark once every currently-dirty field has actually
-	// been pushed -- otherwise a field we skipped this round would never get
-	// picked up again, since its updated_at would already be <= last_update
-	if (!capped)
-		last_update = this_time;
+	scan_pos = i;   // next call resumes right here, not back at 0
 	
 	//check if the console q has any new updates
 	while (q_length(&q_zbitx_console) > 0){
