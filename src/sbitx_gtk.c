@@ -2146,23 +2146,40 @@ static void on_wf_call_button_click(GtkWidget *widget, gpointer data)
 
 // mod disiplay holds the tx modulation time domain envelope
 // even values are the maximum and the even values are minimum
+// Before we added the double buffering below reading during writes
+// caused drawing glitches in the on-screen cw waveform
 
 #define MOD_MAX 800
-int mod_display[MOD_MAX];
+// Double-buffered: the writer (audio thread, via sdr_modulation_update())
+// always builds a fresh copy in the back buffer and only then flips
+// mod_display_front, so readers (GTK thread, zbitx_poll, web thread) never
+// see a partially-written array. Readers should capture mod_display_front
+// into a local once at the top of their function and read through that
+// local for the rest of the function -- never re-read the global mid-loop.
+int mod_display_buf[2][MOD_MAX];
+static volatile int mod_display_front = 0; // index (0 or 1) of the buffer safe to read
 int mod_display_index = 0;
 
 void sdr_modulation_update(int32_t *samples, int count, double scale_up)
 {
 	double min = 0, max = 0;
 
+	int back = 1 - mod_display_front;
+	// Start from a copy of the current front buffer so slots this call
+	// doesn't touch (i.e. most of the buffer, since each call only
+	// advances a handful of entries) still carry forward correct history.
+	memcpy(mod_display_buf[back], mod_display_buf[mod_display_front],
+		   sizeof(mod_display_buf[back]));
+
+	int idx = mod_display_index;
 	for (int i = 0; i < count; i++)
 	{
 		if (i % 48 == 0 && i > 0)
 		{
-			if (mod_display_index >= MOD_MAX)
-				mod_display_index = 0;
-			mod_display[mod_display_index++] = (min / 40000000.0) / scale_up;
-			mod_display[mod_display_index++] = (max / 40000000.0) / scale_up;
+			if (idx >= MOD_MAX)
+				idx = 0;
+			mod_display_buf[back][idx++] = (min / 40000000.0) / scale_up;
+			mod_display_buf[back][idx++] = (max / 40000000.0) / scale_up;
 			min = 0x7fffffff;
 			max = -0x7fffffff;
 		}
@@ -2172,6 +2189,12 @@ void sdr_modulation_update(int32_t *samples, int count, double scale_up)
 			max = *samples;
 		samples++;
 	}
+	mod_display_index = idx;
+
+	// Publish: readers that read mod_display_front after this point get
+	// the fully-updated buffer; readers already mid-read of the old front
+	// value keep reading the untouched, complete previous buffer.
+	mod_display_front = back;
 }
 
 void draw_modulation(struct field *f, cairo_t *gfx)
@@ -2211,13 +2234,14 @@ void draw_modulation(struct field *f, cairo_t *gfx)
 						 palette[SPECTRUM_PLOT][1], palette[SPECTRUM_PLOT][2]);
 	cairo_move_to(gfx, f->x + f->width, f->y + grid_height);
 
-	int n_env_samples = sizeof(mod_display) / sizeof(int32_t);
+	int rd = mod_display_front; // snapshot once; keep reading this buffer for the whole draw
+	int n_env_samples = sizeof(mod_display_buf[rd]) / sizeof(int32_t);
 	int h_center = f->y + grid_height / 2;
 	for (i = 0; i < f->width; i++)
 	{
 		int index = (i * n_env_samples) / f->width;
-		int min = mod_display[index++];
-		int max = mod_display[index++];
+		int min = mod_display_buf[rd][index++];
+		int max = mod_display_buf[rd][index++];
 		cairo_move_to(gfx, f->x + i, min + h_center);
 		cairo_line_to(gfx, f->x + i, max + h_center + 1);
 	}
@@ -6693,10 +6717,11 @@ void web_get_spectrum(char *buff)
 	int j = 3;
 	if (in_tx)
 	{
+		int rd = mod_display_front; // snapshot once; keep reading this buffer for the whole loop
 		strcpy(buff, "TX ");
 		for (int i = 0; i < MOD_MAX; i++)
 		{
-			int y = (2 * mod_display[i]) + 32;
+			int y = (2 * mod_display_buf[rd][i]) + 32;
 			if (y > 127)
 				buff[j++] = 127;
 			else if (y > 0 && y <= 95)
@@ -6810,12 +6835,13 @@ void zbitx_get_spectrum(char *buff){
 
   int j;
   if (in_tx){
+		int rd = mod_display_front; // snapshot once; keep reading this buffer for the whole loop
     strcpy(buff, "WF ");
 		j = strlen(buff);
 		float step = MOD_MAX/250.0;
 		//printf("wf on tx %d / %d", step, MOD_MAX);
 		for (float i = 0; i < MOD_MAX; i+= step){
-      int y = (2 * mod_display[(int)i]) + 32;
+      int y = (2 * mod_display_buf[rd][(int)i]) + 32;
       if (y > 127)
         buff[j] = 127;
 			else if (y < 32)
