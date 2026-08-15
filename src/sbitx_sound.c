@@ -94,6 +94,10 @@ struct Queue qloop;
 static long int last_loopback_reset = 0;		//time interval of last loopback play reset - n1qm
 static int reset_loopback_interval = 300;  		// Seconds to reset loopback device
 static volatile int loopback_reset_requested = 0;
+// Timestamp of the pending reset request, so sound_loop() can defer
+// servicing it off the CW envelope's opening ramp -- see sound_reset()
+// and the reset-servicing block in sound_loop().
+static struct timespec loopback_reset_request_time;
 
 // --- Error counters / scratch ---
 static int pcm_capture_error = 0;				  // count pcm capture errors (not used)
@@ -578,6 +582,7 @@ void sound_reset(int force){
 	// Don't touch loopback_play_handle from this thread -- just ask
 	// sound_thread to do it. See comment at loopback_reset_requested.
 	loopback_reset_requested = 1; 
+	loopback_reset_request_time = gettime;
 
 	last_loopback_reset = ltv;
 #if DEBUG > 0
@@ -663,9 +668,25 @@ int sound_loop(){
 		// Perform any pending loopback reset here -- only this thread
 		// (sound_thread) ever touches loopback_play_handle directly.
 		// See comment at loopback_reset_requested.
+	    //
+		// snd_pcm_reset() is a blocking ioctl. Servicing it immediately,
+		// on the very first loop iteration after tx_on() sets the request,
+		// lands its cost exactly on the CW envelope's opening ramp --
+		// this thread is also the one generating cw_tx_get_sample()'s
+		// samples, so a stall here shows up as a glitch right at key-down.
+		// Deferring by a few ms clears the ~5ms ramp first, so the ioctl's
+		// cost lands on the steady-tone portion instead, where a brief
+		// stall doesn't visibly (or audibly) disturb anything.
+		#define LOOPBACK_RESET_DEFER_US 8000
 		if (loopback_reset_requested) {
-			loopback_reset_requested = 0;
-			snd_pcm_reset(loopback_play_handle);
+			struct timespec _lb_now;
+			clock_gettime(CLOCK_MONOTONIC, &_lb_now);
+			long _lb_elapsed_us = (_lb_now.tv_sec  - loopback_reset_request_time.tv_sec)  * 1000000L
+			                    + (_lb_now.tv_nsec - loopback_reset_request_time.tv_nsec) / 1000L;
+			if (_lb_elapsed_us >= LOOPBACK_RESET_DEFER_US) {
+				loopback_reset_requested = 0;
+				snd_pcm_reset(loopback_play_handle);
+			}
 		}
 
 		//restart the pcm capture if there is an error reading the samples
