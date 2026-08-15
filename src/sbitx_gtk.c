@@ -6915,9 +6915,8 @@ static void zbitx_logs(){
 
 void zbitx_poll(int all){
 	char buff[3000];
-	static unsigned int last_update = 0;
 
-int count = 0;
+    int count = 0;
 	int e = 0;
 	int retry;
 
@@ -7064,7 +7063,7 @@ int count = 0;
 		}
 	}
 	zbitx_poll_done:
-	last_update = this_time;
+	;   // empty statement
 }
 
 void zbitx_init(){
