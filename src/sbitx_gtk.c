@@ -2146,23 +2146,46 @@ static void on_wf_call_button_click(GtkWidget *widget, gpointer data)
 
 // mod disiplay holds the tx modulation time domain envelope
 // even values are the maximum and the even values are minimum
+// Before we added the double buffering below reading during writes
+// caused drawing glitches in the on-screen cw waveform
 
 #define MOD_MAX 800
-int mod_display[MOD_MAX];
+// Double-buffered: the writer (audio thread, via sdr_modulation_update())
+// always builds a fresh copy in the back buffer and only then flips
+// mod_display_front, so readers (GTK thread, zbitx_poll, web thread) never
+// see a partially-written array. Readers should capture mod_display_front
+// into a local once at the top of their function and read through that
+// local for the rest of the function -- never re-read the global mid-loop.
+int mod_display_buf[2][MOD_MAX];
+static volatile int mod_display_front = 0; // index (0 or 1) of the buffer safe to read
+// The cursor (write position) that was current at the moment each buffer
+// was published. Indexed the same way as mod_display_buf, so a reader that
+// snapshots mod_display_front and then reads mod_display_cursor[rd] always
+// gets the cursor that actually matches that buffer's contents -- never a
+// fresher cursor racing ahead of an unpublished buffer.
+static int mod_display_cursor[2] = {0, 0};
 int mod_display_index = 0;
 
 void sdr_modulation_update(int32_t *samples, int count, double scale_up)
 {
 	double min = 0, max = 0;
 
+	int back = 1 - mod_display_front;
+	// Start from a copy of the current front buffer so slots this call
+	// doesn't touch (i.e. most of the buffer, since each call only
+	// advances a handful of entries) still carry forward correct history.
+	memcpy(mod_display_buf[back], mod_display_buf[mod_display_front],
+		   sizeof(mod_display_buf[back]));
+
+	int idx = mod_display_index;
 	for (int i = 0; i < count; i++)
 	{
 		if (i % 48 == 0 && i > 0)
 		{
-			if (mod_display_index >= MOD_MAX)
-				mod_display_index = 0;
-			mod_display[mod_display_index++] = (min / 40000000.0) / scale_up;
-			mod_display[mod_display_index++] = (max / 40000000.0) / scale_up;
+			if (idx >= MOD_MAX)
+				idx = 0;
+			mod_display_buf[back][idx++] = (min / 40000000.0) / scale_up;
+			mod_display_buf[back][idx++] = (max / 40000000.0) / scale_up;
 			min = 0x7fffffff;
 			max = -0x7fffffff;
 		}
@@ -2172,6 +2195,13 @@ void sdr_modulation_update(int32_t *samples, int count, double scale_up)
 			max = *samples;
 		samples++;
 	}
+	mod_display_index = idx;
+	mod_display_cursor[back] = idx; // tag this buffer with its own cursor before publishing it
+
+	// Publish: readers that read mod_display_front after this point get
+	// the fully-updated buffer; readers already mid-read of the old front
+	// value keep reading the untouched, complete previous buffer.
+	mod_display_front = back;
 }
 
 void draw_modulation(struct field *f, cairo_t *gfx)
@@ -2211,13 +2241,24 @@ void draw_modulation(struct field *f, cairo_t *gfx)
 						 palette[SPECTRUM_PLOT][1], palette[SPECTRUM_PLOT][2]);
 	cairo_move_to(gfx, f->x + f->width, f->y + grid_height);
 
-	int n_env_samples = sizeof(mod_display) / sizeof(int32_t);
+	int rd = mod_display_front; // snapshot once; keep reading this buffer for the whole draw
+	int n_env_samples = sizeof(mod_display_buf[rd]) / sizeof(int32_t);
+	int n_pairs = n_env_samples / 2;
+	// mod_display_index (a plain int, only ever written by the audio thread)
+	// points at the pair that's about to be overwritten next -- i.e. the
+	// OLDEST pair still valid in the buffer. Reading raw array order (0..N)
+	// instead would stitch "freshest" data next to "oldest" data wherever
+	// the cursor happens to sit, producing a false discontinuity there.
+	// Offsetting by the cursor walks the buffer in true chronological
+	// order: oldest sample on the left, newest on the right.
+	int cursor_pair = (mod_display_cursor[rd] / 2) % n_pairs;
 	int h_center = f->y + grid_height / 2;
 	for (i = 0; i < f->width; i++)
 	{
-		int index = (i * n_env_samples) / f->width;
-		int min = mod_display[index++];
-		int max = mod_display[index++];
+		int pair = (cursor_pair + (i * n_pairs) / f->width) % n_pairs;
+		int index = pair * 2;
+		int min = mod_display_buf[rd][index];
+		int max = mod_display_buf[rd][index + 1];
 		cairo_move_to(gfx, f->x + i, min + h_center);
 		cairo_line_to(gfx, f->x + i, max + h_center + 1);
 	}
@@ -3323,7 +3364,9 @@ if (!strcmp(field_str("SMETEROPT"), "ON") &&
 	// draw the needle
 	for (struct rx *r = rx_list; r; r = r->next)
 	{
-		int needle_x = (f->width * (MAX_BINS / 2 - r->tuned_bin)) / (MAX_BINS / 2);
+		//int needle_x = (f->width * (MAX_BINS / 2 - r->tuned_bin)) / (MAX_BINS / 2);
+		// center display even when tuned bin is not 512
+		int needle_x = (f->width / 2) + (f->width * (get_tx_shift() - r->tuned_bin)) / (MAX_BINS / 2);
 		fill_rect(gfx, f->x + needle_x, f->y, 1, grid_height, SPECTRUM_NEEDLE);
 	}
 }
@@ -6691,10 +6734,11 @@ void web_get_spectrum(char *buff)
 	int j = 3;
 	if (in_tx)
 	{
+		int rd = mod_display_front; // snapshot once; keep reading this buffer for the whole loop
 		strcpy(buff, "TX ");
 		for (int i = 0; i < MOD_MAX; i++)
 		{
-			int y = (2 * mod_display[i]) + 32;
+			int y = (2 * mod_display_buf[rd][i]) + 32;
 			if (y > 127)
 				buff[j++] = 127;
 			else if (y > 0 && y <= 95)
@@ -6800,17 +6844,21 @@ void zbitx_get_spectrum(char *buff){
   int n_bins = (int)((1.0 * spectrum_span) / 46.875);
   //the center frequency is at the center of the lower sideband,
   //i.e, three-fourth way up the bins.
+  //
+  // Traditional convention: PITCH intentionally not cancelled here --
+  // see the matching comment in spectrum_update() in sbitx.c.
   int starting_bin = (3 *MAX_BINS)/4 - n_bins/2;
   int ending_bin = starting_bin + n_bins;
 
   int j;
   if (in_tx){
+		int rd = mod_display_front; // snapshot once; keep reading this buffer for the whole loop
     strcpy(buff, "WF ");
 		j = strlen(buff);
 		float step = MOD_MAX/250.0;
 		//printf("wf on tx %d / %d", step, MOD_MAX);
 		for (float i = 0; i < MOD_MAX; i+= step){
-      int y = (2 * mod_display[(int)i]) + 32;
+      int y = (2 * mod_display_buf[rd][(int)i]) + 32;
       if (y > 127)
         buff[j] = 127;
 			else if (y < 32)
@@ -6867,36 +6915,45 @@ static void zbitx_logs(){
 
 void zbitx_poll(int all){
 	char buff[3000];
-	static unsigned int last_update = 0;
 
-	int count = 0;
+    int count = 0;
 	int e = 0;
 	int retry;
-	unsigned int this_time = millis();
 
-	for (int i = 0; active_layout[i].cmd[0] > 0; i++){
-		struct field *f = active_layout+i;
-		if (!strcmp(f->label, "WATERFALL") || !strcmp(f->label, "SPECTRUM"))
-			continue;
-		if (all || f->updated_at >  last_update){
-			sprintf(buff, "%s %s}", f->label, f->value);
-			retry = 3;
-			do {
-				e = i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(buff), buff);
-				if (!e){
-					if (retry < 3)
-						printf("Sucess on %d\n", retry);
-					break;
-				}
-				delay(3);
-				printf("Retrying I2C %d\n", retry);
-			}while(retry--);
-			f->update_remote = 0;
-			count++;
-			delay(10);
+	#define ZBITX_MAX_FIELDS_PER_POLL 20
+	static int scan_pos = 0;   // persists across calls -- resume where we left off
+
+	int n_fields = 0;
+	while (active_layout[n_fields].cmd[0] > 0)
+		n_fields++;
+
+	int scanned = 0;
+	int i = scan_pos;
+	while (scanned < n_fields && count < ZBITX_MAX_FIELDS_PER_POLL){
+		struct field *f = active_layout + i;
+		if (strcmp(f->label, "WATERFALL") && strcmp(f->label, "SPECTRUM")){
+			if (all || f->update_remote){
+				sprintf(buff, "%s %s}", f->label, f->value);
+				retry = 3;
+				do {
+					e = i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(buff), buff);
+					if (!e){
+						if (retry < 3)
+							printf("Sucess on %d\n", retry);
+						break;
+					}
+					delay(3);
+					printf("Retrying I2C %d\n", retry);
+				}while(retry--);
+				f->update_remote = 0;
+				count++;
+				delay(10);
+			}
 		}
+		i = (i + 1) % n_fields;
+		scanned++;
 	}
-	last_update = this_time;
+	scan_pos = i;   // next call resumes right here, not back at 0
 	
 	//check if the console q has any new updates
 	while (q_length(&q_zbitx_console) > 0){
@@ -6914,11 +6971,13 @@ void zbitx_poll(int all){
 	}
 
 
-	zbitx_get_spectrum(buff);
-	strcat(buff, "}"); //terminate the block
-	//spectrum can be lost mometarily, it is alright	
-	delay(1);
-	i2cbb_write_i2c_block_data(0x0a, '{', strlen(buff), buff);
+	if (!in_tx) {
+		zbitx_get_spectrum(buff);
+		strcat(buff, "}"); //terminate the block
+		//spectrum can be lost mometarily, it is alright	
+		delay(1);
+		i2cbb_write_i2c_block_data(0x0a, '{', strlen(buff), buff);
+	}
 
 	//transmit in_tx
 	sprintf(buff, "IN_TX %d}", in_tx);
@@ -7004,7 +7063,7 @@ void zbitx_poll(int all){
 		}
 	}
 	zbitx_poll_done:
-	last_update = this_time;
+	;   // empty statement
 }
 
 void zbitx_init(){
@@ -7238,6 +7297,37 @@ gboolean ui_tick(gpointer gook)
 			modem_poll(mode_id(get_field("r1:mode")->value));
 	}
 
+	// zbitx_poll() talks to the remote display over bit-banged I2C and can
+	// block the GTK thread (the per-field push loop in particular -- it
+	// unconditionally does delay(10) per dirty field, with retries at
+	// delay(3) each). It must never share a schedule with modem_poll(),
+	// which -- see immediately above -- runs on *every* ui_tick() during
+	// CW/CWR to keep up with the keyer. Sharing wf_spd-derived tick_count
+	// (as the block below does for the local spectrum/waterfall widgets)
+	// means a fast waterfall speed setting drags zbitx_poll() onto nearly
+	// every tick too, directly reintroducing the paddle-timing staleness
+	// problem fixed in modem_cw.c -- and since this runs for the whole
+	// duration of a CW TX burst, not just at start/end, it corrupts every
+	// element, not just the first and last.
+	// Give it its own timer period, decoupled from wf_spd, and back off
+	// hard during CW/CWR TX so it stays out of modem_poll()'s way.
+	{
+		static int zbitx_poll_ticks = 0;
+		int zbitx_mode = mode_id(get_field("r1:mode")->value);
+		int zbitx_poll_period = 100; // normal cadence
+
+		// update zbitx display much less often in CW or CWR modes
+		if (zbitx_mode == MODE_CW || zbitx_mode == MODE_CWR)
+			zbitx_poll_period = 500; // in CW/CWR (RX or TX): leave the GTK thread alone
+
+		zbitx_poll_ticks++;
+		if (zbitx_available && zbitx_poll_ticks >= zbitx_poll_period)
+		{
+			zbitx_poll(0);
+			zbitx_poll_ticks = 0;
+		}
+	}
+
 	int tick_count = 100;
 
 	switch (mode_id(field_str("MODE")))
@@ -7282,9 +7372,8 @@ gboolean ui_tick(gpointer gook)
 		char response[6], cmd[10];
 		cmd[0] = 1;
 		
-		// zbitx
-		if (zbitx_available)
-			zbitx_poll(0);
+		// zbitx_poll() now runs on its own independent, CW-aware schedule
+		// above -- see the block right after the modem_poll() calls.
 
 		{
 			char buff[20];
@@ -8648,6 +8737,7 @@ int main(int argc, char *argv[])
 	char *path = getenv("HOME");
 	strcpy(directory, path);
 	strcat(directory, "/sbitx/data/user_settings.ini");
+	initialize_macro_selection();  // do this before a user setting tries to set a macro
 	if (ini_parse(directory, user_settings_handler, NULL) < 0)
 	{
 		printf("Unable to load ~/sbitx/data/user_settings.ini\n"
@@ -8716,15 +8806,20 @@ int main(int argc, char *argv[])
 	if (zbitx_available)
 		zbitx_poll(1); // send all the field values
 
-	//switch to maximum priority
+	// NOTE: This used to set SCHED_FIFO max priority on the GTK/UI thread,
+	// which put it at equal real-time priority with the audio thread in
+	// sbitx_sound.c. Two SCHED_FIFO threads at the same priority don't get
+	// time-sliced against each other -- whichever one is running keeps the
+	// CPU until it blocks or yields. That let long Cairo/waterfall redraws
+	// stall the audio thread for 8-10ms+ at a time, causing ALSA underruns
+	// and raspy CW audio. The UI thread doesn't need real-time scheduling;
+	// only the audio thread does
 	struct sched_param sch;
-	sch.sched_priority = sched_get_priority_max(SCHED_FIFO);
-	pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch);
-
+	sch.sched_priority = 0;
+	pthread_setschedparam(pthread_self(), SCHED_OTHER, &sch);
+	
 	// Configure the INA260
-	configure_ina260();
-
-	initialize_macro_selection();
+	//configure_ina260();
 
 	// Read voltage and current
 	// read_voltage_current(&voltage, &current);

@@ -77,6 +77,22 @@ void si5351a_clkoff(uint8_t clk)
   //i2c_exit();
 }
 
+extern int bfo_freq;
+extern int bfo_freq_runtime_offset;
+
+// Cheap per-clock mute/unmute for the fixed IF BFO (CLK1), used to silence
+// LO leakage during CW gaps without going through the full tr_switch() relay
+// sequence.
+void si5351_bfo_off(void)
+{
+  si5351a_clkoff(SI_CLK1_CONTROL);
+}
+
+void si5351_bfo_on(void)
+{
+  si5351bx_setfreq(1, bfo_freq + bfo_freq_runtime_offset);
+}
+
 /*
   Follow the AN619 application note for the Si5351
   a = mult

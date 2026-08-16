@@ -218,6 +218,7 @@ int get_passband_bw();
 void hamlib_tx(int tx_on);
 int get_default_passband_bw();
 int get_pitch();
+int get_tx_shift(void);
 time_t time_sbitx();
 
 //cw defines, these are bitfields, hence, powers of 2

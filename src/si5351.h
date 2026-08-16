@@ -3,3 +3,5 @@ void si5351bx_init();
 void si5351bx_setfreq(uint8_t clknum, uint32_t fout);
 void si5351_reset();
 void si5351a_clkoff(uint8_t clk);
+void si5351_bfo_off(void);
+void si5351_bfo_on(void);
