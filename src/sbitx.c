@@ -29,7 +29,7 @@
 int bandtweak = 4;		// Band power array index the \bs command will target -n1qm
 int ext_ptt_enable = 0; // ADDED BY KF7YDU.
 char audio_card[32];
-static int tx_shift = 600;  // old default was 512
+static int tx_shift = 600;  // set from "center_bin" in hw_settings.ini if present, old default was 512
 parametriceq tx_eq;
 parametriceq rx_eq;
 
@@ -203,17 +203,18 @@ struct power_settings band_power[] = {
 
 struct Queue qremote;
 
-void radio_tune_to(u_int32_t f)
-{
+void radio_tune_to(u_int32_t f) {
+    // old code used 512 bins * 46.875 hz/bin = 24000 as a constant
+    // we now compute shift_hz based on center_bin (aka tx_shift)
+    int shift_hz = (int)(tx_shift * (96000.0 / MAX_BINS) + 0.5);
 	if (rx_list->mode == MODE_CW)
-		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - 24000 + TUNING_SHIFT - rx_pitch);
+		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - shift_hz - rx_pitch);
 	else if (rx_list->mode == MODE_CWR)
-		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - 24000 + TUNING_SHIFT + rx_pitch);
+		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - shift_hz + rx_pitch);
 	else
-		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - 24000 + TUNING_SHIFT);
-
-	//  printf("Setting radio rx_pitch %d\n", rx_pitch);
+		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - shift_hz);
 }
+
 long set_bfo_offset(int offset, long cur_freq)
 {
 	bfo_freq_runtime_offset += offset;
@@ -2022,6 +2023,8 @@ static int hw_settings_handler(void *user, const char *section,
 		band_power[hw_init_index++].scale = atof(value);
 	if (!strcmp(name, "bfo_freq"))
 		bfo_freq = atoi(value);
+    if (!strcmp(name, "center_bin"))
+        tx_shift = atoi(value);
 	// Add variable for SSB/CW Power Factor Adjustment W9JES
 	if (!strcmp(name, "ssb_val"))
 		ssb_val = atof(value);
