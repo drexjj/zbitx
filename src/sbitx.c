@@ -2397,8 +2397,8 @@ void setup()
 	
 	add_rx(7000000, MODE_LSB, -3000, -300);
 	add_tx(7000000, MODE_LSB, -3000, -300);
-	rx_list->tuned_bin = 512;
-	tx_list->tuned_bin = 512;
+	rx_list->tuned_bin = tx_shift;
+	tx_list->tuned_bin = tx_shift;
 	tx_init(7000000, MODE_LSB, -3000, -150);
 
 	/* Version detection: ATtiny85 SWR bridge at I2C 0x8 has been removed.
