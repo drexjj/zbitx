@@ -3206,7 +3206,7 @@ if (!strcmp(field_str("SMETEROPT"), "ON") &&
 	int n_bins = (int)((1.0 * spectrum_span) / 46.875);
 	// the center frequency is at the center of the lower sideband,
 	// i.e, three-fourth way up the bins.
-	int starting_bin = (3 * MAX_BINS) / 4 - n_bins / 2;
+	int starting_bin = MAX_BINS - get_tx_shift() - n_bins / 2;
 	int ending_bin = starting_bin + n_bins;
 
 	float x_step = (1.0 * f->width) / n_bins;
@@ -6728,7 +6728,7 @@ void web_get_spectrum(char *buff)
 	int n_bins = (int)((1.0 * spectrum_span) / 46.875);
 	// the center frequency is at the center of the lower sideband,
 	// i.e, three-fourth way up the bins.
-	int starting_bin = (3 * MAX_BINS) / 4 - n_bins / 2;
+	int starting_bin = MAX_BINS - get_tx_shift() - n_bins / 2;
 	int ending_bin = starting_bin + n_bins;
 
 	int j = 3;
@@ -6847,7 +6847,7 @@ void zbitx_get_spectrum(char *buff){
   //
   // Traditional convention: PITCH intentionally not cancelled here --
   // see the matching comment in spectrum_update() in sbitx.c.
-  int starting_bin = (3 *MAX_BINS)/4 - n_bins/2;
+  int starting_bin = MAX_BINS - get_tx_shift() - n_bins/2;
   int ending_bin = starting_bin + n_bins;
 
   int j;
