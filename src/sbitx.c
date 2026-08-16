@@ -764,7 +764,7 @@ struct rx *add_tx(int frequency, short mode, int bpf_low, int bpf_high)
 	struct rx *r = malloc(sizeof(struct rx));
 	r->low_hz = bpf_low;
 	r->high_hz = bpf_high;
-	r->tuned_bin = 512;
+	r->tuned_bin = tx_shift;
 
 	// create fft complex arrays to convert the frequency back to time
 	r->fft_time = (fftw_complex *)fftw_malloc(sizeof(fftw_complex) * MAX_BINS);
@@ -814,7 +814,7 @@ struct rx *add_rx(int frequency, short mode, int bpf_low, int bpf_high)
 	struct rx *r = malloc(sizeof(struct rx));
 	r->low_hz = bpf_low;
 	r->high_hz = bpf_high;
-	r->tuned_bin = 512;
+	r->tuned_bin = tx_shift;
 	r->agc_gain = 0.0;
 
 	// create fft complex arrays to convert the frequency back to time
