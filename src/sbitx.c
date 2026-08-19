@@ -2165,7 +2165,7 @@ void set_rx_filter()
 	// on AM filter at the IF level, instead of the baseband
 	if (rx_list->mode == MODE_AM)
 	{
-		printf("Setting AM filter\n");
+		//printf("Setting AM filter\n");
 		// Centered on tx_shift's Hz value (was hardcoded 24000, same class
 		// of bug as radio_tune_to() -- see radio_tune_to_center_bin_fix).
 		double if_center_hz = tx_shift * (96000.0 / MAX_BINS);
@@ -2298,7 +2298,7 @@ static void read_hw_ini()
 */
 void set_tx_power_levels()
 {
-	 printf("Setting tx_power drive to %d\n", tx_drive);
+	 //printf("Setting tx_power drive to %d\n", tx_drive);
 	// int tx_power_gain = 0;
 
 	// search for power in the approved bands
@@ -2311,7 +2311,7 @@ void set_tx_power_levels()
 			tx_amp = (1.0 * tx_drive * band_power[i].scale);
 		}
 	}
-		printf("tx_amp is set to %g for %d drive\n", tx_amp, tx_drive);
+		//printf("tx_amp is set to %g for %d drive\n", tx_amp, tx_drive);
 	// we keep the audio card output 'volume' constant'
 	sound_mixer(audio_card, "Master", 100);
 	sound_mixer(audio_card, "Capture", tx_gain);
