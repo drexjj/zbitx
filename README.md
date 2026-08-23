@@ -1,10 +1,8 @@
-# zBitx - 32-Bit Version
+# zBitx Custom Software
 ![sBitx image](sbv50.png)
 
 
-An improved version of the zBitx application designed for the zBitx hardware. This version is designed for the 32-bit Raspberry Pi image, which will be availabled at [here](https://github.com/drexjj/zbitx/releases) inthe future.
-
-### Please note that CW is not fully working on this BETA build. We are trying to identify the root cause.
+An improved version of the zBitx application designed for the zBitx hardware. This version is designed for the 32-bit Raspberry Pi image, which will be available at [here](https://github.com/drexjj/zbitx/releases) in the future.
 
 
 ## 🚀 Core Development Team
@@ -12,6 +10,7 @@ An improved version of the zBitx application designed for the zBitx hardware. Th
 We have an incredible development team collaborating on improvements for the sBitx platform:
 
 - **JJ - W9JES**
+- **Mike - KB2ML**
 - **Juan - WP3DN**
 
 A huge thank you to everyone who contributes their time and expertise to this project!
