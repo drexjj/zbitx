@@ -105,6 +105,23 @@ static void on_my_grid_changed(GtkWidget *widget, gpointer data) {
 }
 
 
+// Handle to the currently-open Settings dialog, or NULL when none is open.
+// gtk_dialog_run() below blocks in a nested modal loop, so the only way to
+// dismiss this dialog programmatically (e.g. when the zBitx front panel closes
+// its own Settings screen) is to send a response to this dialog from outside.
+// settings_ui_close() does exactly that.
+static GtkWidget *settings_dialog = NULL;
+
+// Close the Settings dialog if it is open. Safe to call when it is not open
+// (does nothing). Called from the RP2040 command handler in sbitx_gtk.c when
+// the front panel reports that its Settings screen was closed.
+void settings_ui_close(void){
+    if (settings_dialog)
+        // Behaves exactly as if the user clicked Cancel: unblocks
+        // gtk_dialog_run(), which then falls through to gtk_widget_destroy().
+        gtk_dialog_response(GTK_DIALOG(settings_dialog), GTK_RESPONSE_CANCEL);
+}
+
 // Function to create the dialog box
 void settings_ui(GtkWidget* parent){
     GtkWidget *dialog, *grid, *label, *entry_callsign, *entry_grid, *entry_pin, *check_button;
@@ -173,6 +190,9 @@ void settings_ui(GtkWidget* parent){
 
 
     gtk_widget_show_all(dialog);
+    // Publish the handle so settings_ui_close() can dismiss us from outside
+    // while we're blocked in gtk_dialog_run() below.
+    settings_dialog = dialog;
     //gtk_dialog_run(GTK_DIALOG(dialog));
     gint response = gtk_dialog_run(GTK_DIALOG(dialog));
 
@@ -193,5 +213,9 @@ void settings_ui(GtkWidget* parent){
         //add_to_list(list_store, user_id, password, grid_settings, "", "", "", "");
     }
 
+    // Clear the handle before destroying so settings_ui_close() can never
+    // touch a freed widget. (A close request that arrives after this point
+    // is a no-op, which is exactly what we want.)
+    settings_dialog = NULL;
     gtk_widget_destroy(dialog);
 }

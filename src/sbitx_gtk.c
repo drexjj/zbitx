@@ -311,6 +311,7 @@ GtkWidget *waterfall_gain_slider;
 GtkWidget *text_area = NULL;
 
 extern void settings_ui(GtkWidget *p);
+extern void settings_ui_close(void);
 extern void eq_ui(GtkWidget *p);
 
 // these are callbacks called by the operating system
@@ -8320,6 +8321,15 @@ void cmd_exec(char *cmd)
 		tx_off();
 		save_user_settings(1);
 		system("sudo /sbin/shutdown -h now");
+	}
+	else if (!strcmp(exec, "SETCLOSE"))
+	{
+		// Sent by the Pico front panel when the user closes its Settings
+		// screen. Dismiss the matching GTK Settings dialog if it is still
+		// open. settings_ui() is blocked in gtk_dialog_run(), but that is a
+		// nested GTK main loop, so this handler (reached from ui_tick ->
+		// cmd_exec on that same loop) still runs and can respond to it.
+		settings_ui_close();
 	}
 	else if (!strcmp(exec, "qrz"))
 	{
