@@ -8331,6 +8331,25 @@ void cmd_exec(char *cmd)
 		// cmd_exec on that same loop) still runs and can respond to it.
 		settings_ui_close();
 	}
+	else if (!strcmp(exec, "TUNE"))
+	{
+		// Sent by the Pico front panel's Menu 1 TUNE toggle as "TUNE ON" or
+		// "TUNE OFF". The generic field path below can't drive this: the #tune
+		// field's callback only reacts to a GTK button press, and the real
+		// tuning sequence (key TX at TNPWR for TNDUR seconds, then auto-stop)
+		// lives in do_control_action's "TUNE ON"/"TUNE OFF" handlers. Forward
+		// there, and keep the on-screen TUNE toggle in sync.
+		if (!strcmp(args, "ON"))
+		{
+			set_field("#tune", "ON");
+			do_control_action("TUNE ON");
+		}
+		else
+		{
+			set_field("#tune", "OFF");
+			do_control_action("TUNE OFF");
+		}
+	}
 	else if (!strcmp(exec, "qrz"))
 	{
 		if (strlen(args))
@@ -8468,6 +8487,17 @@ void cmd_exec(char *cmd)
 			}
 			else
 			{
+				// Fire the field's own edit callback so the new value is
+				// applied, not just stored. Numeric DSP controls (NOTCH freq,
+				// WFMIN/MAX, SCOPEGAIN, BFO, TXMON, ...) latch their value into
+				// a DSP variable inside do_*_edit(); without this call, a value
+				// arriving from the RP2040 front panel would update the on-screen
+				// number but never take effect. Toggles are unaffected (their
+				// callback just re-reads the field). FIELD_EDIT mirrors how the
+				// GTK edit path invokes fn() after a local edit.
+				if (f->fn)
+					f->fn(f, NULL, FIELD_EDIT, 0, 0, 0);
+
 				// this is an extract from focus_field()
 				// it shifts the focus to the updated field
 				// without toggling/jumping the value
