@@ -8322,15 +8322,10 @@ void cmd_exec(char *cmd)
 		save_user_settings(1);
 		system("sudo /sbin/shutdown -h now");
 	}
-	else if (!strcmp(exec, "SETCLOSE"))
-	{
-		// Sent by the Pico front panel when the user closes its Settings
-		// screen. Dismiss the matching GTK Settings dialog if it is still
-		// open. settings_ui() is blocked in gtk_dialog_run(), but that is a
-		// nested GTK main loop, so this handler (reached from ui_tick ->
-		// cmd_exec on that same loop) still runs and can respond to it.
-		settings_ui_close();
-	}
+	// NOTE: the front panel no longer opens the GTK settings dialog. Its SETUP
+	// screen sets MYCALLSIGN/MYGRID/PASSKEY directly (each field posts its own
+	// command), so there is no "SETUP"/"SETUPCLOSE" handshake here anymore. The
+	// GTK's own on-screen SET button still works via do_control_action("SET").
 	else if (!strcmp(exec, "TUNE"))
 	{
 		// Sent by the Pico front panel's Menu 1 TUNE toggle as "TUNE ON" or
