@@ -8690,6 +8690,10 @@ int main(int argc, char *argv[])
 		ini_parse(directory, user_settings_handler, NULL);
 	}
 
+	// Force these features ON at default, overriding any user_settings.ini value
+	set_field("#scope_autoadj", "ON");
+	set_field("#smeter_option", "ON");
+
 	// the logger fields may have an unfinished qso details
 	call_wipe();
 
