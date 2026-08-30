@@ -1,5 +1,5 @@
 # zBitx Custom Software
-![sBitx image](sbv50.png)
+![sBitx image](zbitx505.jpg)
 
 
 An improved version of the zBitx application designed for the zBitx hardware. This version is designed for the 32-bit Raspberry Pi image, which will be available at [here](https://github.com/drexjj/zbitx/releases) in the future.
@@ -13,7 +13,16 @@ We have an incredible development team collaborating on improvements for the sBi
 - **Mike - KB2ML**
 - **Juan - WP3DN**
 
-A huge thank you to everyone who contributes their time and expertise to this project!
+A huge thank you to everyone who contributed their time and expertise to this project including our early release testers!
+- **Viric**
+- **Farhan - VU2ESE**
+- **Juan - WP3DN**
+- **Mike - KB2ML**
+- **Evan - AC9TU**
+- **Bob - KD8CGH**
+- **Andy - KC1WCH**
+- **Ed - KV1P**
+
 
 ## 📂 File Compatibility
 
