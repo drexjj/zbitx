@@ -350,13 +350,6 @@
                 </select>
             </div>
             <div class="sbitxv3-control">
-                <label class="sbitxv3-label" for="ePTT">ePTT</label>
-                <select class="sbitxv3-selection sbitx-selection" id="ePTT">
-                    <option value="OFF">OFF</option>
-                    <option value="ON">ON</option>
-                </select>
-            </div>
-            <div class="sbitxv3-control">
                 <label class="sbitxv3-label" for="SPAN">SPAN</label>
                 <select class="sbitxv3-selection sbitx-selection" id="SPAN">
                     <option value="25K">25K</option>
@@ -596,20 +589,6 @@
                 <div class="sbitxv3-control">
                     <label class="sbitxv3-label" for="ANR">ANR</label>
                     <select class="sbitxv3-selection sbitx-selection" id="ANR">
-                        <option value="OFF">OFF</option>
-                        <option value="ON">ON</option>
-                    </select>
-                </div>
-                <div class="sbitxv3-control">
-                    <label class="sbitxv3-label" for="RXEQ">RXEQ</label>
-                    <select class="sbitxv3-selection sbitx-selection" id="RXEQ">
-                        <option value="OFF">OFF</option>
-                        <option value="ON">ON</option>
-                    </select>
-                </div>
-                <div class="sbitxv3-control">
-                    <label class="sbitxv3-label" for="TXEQ">TXEQ</label>
-                    <select class="sbitxv3-selection sbitx-selection" id="TXEQ">
                         <option value="OFF">OFF</option>
                         <option value="ON">ON</option>
                     </select>
@@ -4085,6 +4064,11 @@
                     el("STORE").style.display = "none";
                 }
                 break;
+            case 'TUNE':
+                // Backend reports the tune state, including the auto-stop
+                // after the tune duration (TNDUR) expires. Sync the button.
+                setTuneState(args.toUpperCase() === 'ON');
+                break;
             case 'MODE':
                 mode_set(args);
             //There is no break statement here, MODE continues to default case
@@ -4417,6 +4401,20 @@
         });
     }
 
+    // Shared tune state so both the button handler and incoming
+    // backend "TUNE ON/OFF" updates can keep the button in sync.
+    var isTuneOn = false;
+
+    // Update the tune button's state (flag + on-screen label).
+    // Called from the click handler and when the backend reports a
+    // change (e.g. auto-stop after the tune duration expires).
+    function setTuneState(on) {
+        isTuneOn = on;
+        var tuneStateSpan = document.getElementById('tune_state');
+        if (tuneStateSpan)
+            tuneStateSpan.textContent = on ? 'ON' : 'OFF';
+    }
+
     // Function to check if tune should be disabled
     function checkTuneState() {
         const tuneButton = document.getElementById('tune_button');
@@ -4461,19 +4459,14 @@
 	    const tuneButton = document.getElementById('tune_button');
 	    tuneButton.addEventListener('click', function() {
 		    if (isTuneOn) {
-			    websocket_send('tune off');
-			    isTuneOn = false;
+			    websocket_send('TUNE OFF');
+			    setTuneState(false);
 		    } else {
-			    websocket_send('tune on');
-			    isTuneOn = true;
+			    websocket_send('TUNE ON');
+			    setTuneState(true);
 		    }
 	    });
 
-        // ePTT button handler
-        document.getElementById('ePTT').addEventListener('change', function() {
-            websocket_send('eptt ' + this.value.toLowerCase());
-        });
-        
         // Initialize sidetone slider
         document.getElementById('slider_SIDETONE').addEventListener('input', function() {
             websocket_send('sidetone ' + this.value);
