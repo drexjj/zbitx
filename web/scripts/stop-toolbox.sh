@@ -1,6 +1,6 @@
 #!/bin/bash
 # Define the application name and command ** APP_NAME MUST match the script name (after the start_  prefix) for proper app-status API tracking **
-APP_NAME="toolbox"
+APP_NAME="zb_launcher"
 
 
 # Define the VNC and WebSocket ports for this application

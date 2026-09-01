@@ -9,7 +9,7 @@ DISPLAY_NUM=10
 WIDGET_LABEL="zBitx Toolbox"
 
 # Define the application name (lowercase, no spaces) and start command (use full path /home/pi/... and not ~/...)
-APP_NAME="toolbox"  # ** APP_NAME MUST match the script name (after the start_  prefix) for proper app-status API tracking **
+APP_NAME="zb_launcher"  # ** APP_NAME MUST match the script name (after the start_  prefix) for proper app-status API tracking **
 APP_COMMAND="/home/pi/zbitx-toolbox/zb_launcher"
 
 # Stop other apps if needed
