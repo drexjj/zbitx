@@ -254,6 +254,7 @@ int update_logs = 0;
 #define ZBITX_I2C_ADDRESS 0xa
 void zbitx_init();
 void zbitx_poll(int all);
+void send_smeter_to_panel(void);
 void zbitx_pipe(int style, char *text);
 void zbitx_get_spectrum(char *buff);
 void zbitx_write(int style, char *text);
@@ -3072,15 +3073,10 @@ if (!strcmp(field_str("SMETEROPT"), "ON") &&
 		// Pass the rx_gain along with the rx pointer
 		s_meter_value = calculate_s_meter(current_rx, rx_gain);
 
-		// Send the raw s_meter_value to the Pico front panel.
-		// smeter_draw() on the Pico divides by 200 to get a 0-6 bar index.
-		// Sent explicitly like IN_TX because the GTK s-meter is drawn directly
-		// with Cairo and never stored in a layout field that zbitx_poll() would pick up.
-		if (zbitx_available) {
-			char smeter_buff[30];
-			sprintf(smeter_buff, "SMETER %d}", s_meter_value);
-			i2cbb_write_i2c_block_data(0x0a, '{', strlen(smeter_buff), smeter_buff);
-		}
+		// NOTE: the I2C push of s_meter_value to the RP2040 front panel has
+		// moved to send_smeter_to_panel(), called from zbitx_poll(), so the
+		// panel S-meter also updates in headless mode. This block now only
+		// draws the on-screen GUI meter below.
 
 		// Lets separate the S-meter value into s-units and additional dB
 		int s_units = s_meter_value / 100;
@@ -6743,6 +6739,36 @@ static void zbitx_logs(){
 	fclose(pf);
 }
 
+void send_smeter_to_panel(void)
+{
+	// Push the S-meter reading to the RP2040 front panel over I2C.
+	// This used to live inside draw_spectrum() (the Cairo redraw path), which
+	// meant it never ran in headless mode and the panel S-meter froze. It now
+	// runs from zbitx_poll() so it updates in both GUI and headless operation.
+	if (!zbitx_available)
+		return;
+
+	// Respect the same on/off toggle the GUI meter uses.
+	if (strcmp(field_str("SMETEROPT"), "ON"))
+		return;
+
+	// Suppress during voice TX (USB/LSB/AM), matching draw_spectrum().
+	const char *mode_str = field_str("r1:mode");
+	if (in_tx && (!strcmp(mode_str, "USB") || !strcmp(mode_str, "LSB") || !strcmp(mode_str, "AM")))
+		return;
+
+	struct rx *current_rx = rx_list;
+	if (!current_rx)
+		return;
+
+	double rx_gain = (double)get_rx_gain();
+	int s_meter_value = calculate_s_meter(current_rx, rx_gain);
+
+	char smeter_buff[30];
+	sprintf(smeter_buff, "SMETER %d}", s_meter_value);
+	i2cbb_write_i2c_block_data(0x0a, '{', strlen(smeter_buff), smeter_buff);
+}
+
 void zbitx_poll(int all){
 	char buff[3000];
 	static unsigned int last_update = 0;
@@ -7227,6 +7253,7 @@ gboolean ui_tick(gpointer gook)
 		if (zbitx_available && zbitx_poll_ticks >= zbitx_poll_period)
 		{
 			zbitx_poll(0);
+			send_smeter_to_panel();
 			zbitx_poll_ticks = 0;
 		}
 	}
