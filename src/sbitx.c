@@ -1257,7 +1257,7 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 	int m = 0;
 	for (i = MAX_BINS / 2; i < MAX_BINS; i++)
 	{
-		i_sample = (1.0 * input_rx[m]) / 200000000.0;
+		i_sample = (1.0 * input_rx[m]) / 100000000.0;
 		__real__ fft_m[m] = i_sample;
 		__imag__ fft_m[m] = 0;
 		__real__ fft_in[i] = i_sample;
