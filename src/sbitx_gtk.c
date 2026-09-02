@@ -6749,12 +6749,19 @@ void send_smeter_to_panel(void)
 		return;
 
 	// Respect the same on/off toggle the GUI meter uses.
-	if (strcmp(field_str("SMETEROPT"), "ON"))
+	// NOTE: field_str() looks up by LABEL, so "SMETEROPT" is correct here,
+	// and it can return NULL if the field isn't found - guard against that.
+	const char *smeteropt = field_str("SMETEROPT");
+	if (!smeteropt || strcmp(smeteropt, "ON"))
 		return;
 
 	// Suppress during voice TX (USB/LSB/AM), matching draw_spectrum().
-	const char *mode_str = field_str("r1:mode");
-	if (in_tx && (!strcmp(mode_str, "USB") || !strcmp(mode_str, "LSB") || !strcmp(mode_str, "AM")))
+	// The mode field is looked up by its cmd via get_field("r1:mode"),
+	// NOT field_str() (which matches on label and would return NULL for
+	// "r1:mode", causing strcmp(NULL,...) to segfault on TX).
+	struct field *mode_f = get_field("r1:mode");
+	if (mode_f && in_tx &&
+		(!strcmp(mode_f->value, "USB") || !strcmp(mode_f->value, "LSB") || !strcmp(mode_f->value, "AM")))
 		return;
 
 	struct rx *current_rx = rx_list;
