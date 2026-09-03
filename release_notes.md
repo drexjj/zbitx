@@ -1,3 +1,6 @@
+# v5.05
+- First public release. Multiple fixes and changes to improve cw, interfaces, etc. Requires panel firmware v5.05z
+
 # v5.02
 - Fixed SWR/PWR and Batt Voltage Display for GTK Interface. Requires frontpanel v1.10
 
