@@ -8,11 +8,15 @@ date
 cd $HOME/sbitx
 git stash --include-untracked
 git remote set-url origin https://github.com/drexjj/zbitx.git
+git stash
 git pull
 git checkout main
 cd $HOME/sbitx/src/ft8_lib
 make clean
 make
+cd $HOME/sbitx/
+make clean
+make
 echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
 
-echo "zbitx has been installed successfully. You can now close this window."
+echo "zbitx software has been installed successfully. You can now close this window."
