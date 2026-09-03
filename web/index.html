@@ -311,9 +311,9 @@
 
             <div class="linear" id="linear_DRIVE">
                 <label class="linear-label" for="DRIVE">DRIVE</label>
-                <input type="number" id="DRIVE" min="1" max="100" class="linear-value">
+                <input type="number" id="DRIVE" min="0" max="100" step="5" class="linear-value">
                 <div class="linear-dropdown">
-                    <input type="range" class="linear-slider" id="slider_DRIVE" max="100" min="1" step="1" value="13">
+                    <input type="range" class="linear-slider" id="slider_DRIVE" max="100" min="0" step="5" value="13">
                 </div>
             </div>
 
@@ -345,13 +345,6 @@
             <div class="sbitxv3-control">
                 <label class="sbitxv3-label" for="RIT">RIT</label>
                 <select class="sbitxv3-selection sbitx-selection" id="RIT">
-                    <option value="OFF">OFF</option>
-                    <option value="ON">ON</option>
-                </select>
-            </div>
-            <div class="sbitxv3-control">
-                <label class="sbitxv3-label" for="ePTT">ePTT</label>
-                <select class="sbitxv3-selection sbitx-selection" id="ePTT">
                     <option value="OFF">OFF</option>
                     <option value="ON">ON</option>
                 </select>
@@ -600,20 +593,6 @@
                         <option value="ON">ON</option>
                     </select>
                 </div>
-                <div class="sbitxv3-control">
-                    <label class="sbitxv3-label" for="RXEQ">RXEQ</label>
-                    <select class="sbitxv3-selection sbitx-selection" id="RXEQ">
-                        <option value="OFF">OFF</option>
-                        <option value="ON">ON</option>
-                    </select>
-                </div>
-                <div class="sbitxv3-control">
-                    <label class="sbitxv3-label" for="TXEQ">TXEQ</label>
-                    <select class="sbitxv3-selection sbitx-selection" id="TXEQ">
-                        <option value="OFF">OFF</option>
-                        <option value="ON">ON</option>
-                    </select>
-                </div>
                 <div class="linear rx-control" id="compresseion">
                     <label class="linear-label" for="COMP">COMP</label>
                     <input type="number" id="COMP" min="0" max="10" class="linear-value">
@@ -736,8 +715,8 @@
             <script>
                 const canvas = document.getElementById('canvas');
                 const ctx = canvas.getContext('2d');
-                const text_animation = "jBitx'd";
-                const fontSize = 60;
+                const text_animation = "zBitx Enhanced";
+                const fontSize = 50;
                 let letters = [];
                 let time = 0;
 
@@ -4085,6 +4064,11 @@
                     el("STORE").style.display = "none";
                 }
                 break;
+            case 'TUNE':
+                // Backend reports the tune state, including the auto-stop
+                // after the tune duration (TNDUR) expires. Sync the button.
+                setTuneState(args.toUpperCase() === 'ON');
+                break;
             case 'MODE':
                 mode_set(args);
             //There is no break statement here, MODE continues to default case
@@ -4215,7 +4199,7 @@
     $("#data_chat_rx").on("click", data_rx);
     //$(".sbitxv3-slider").on("click", toggle_slider);
     //ssb buttons
-    $("#xpra_launch_digi, #xpra_launch_cw, #xpra_launch_ft8, #xpra_launch_voice").on("click", function() {
+	$("#xpra_launch_digi, #xpra_launch_cw, #xpra_launch_ft8, #xpra_launch_voice").on("click", function() {
         window.open("apps.html", "_blank");
     });
     $("#ptt_tx").on("click", ptt_tx);
@@ -4417,6 +4401,20 @@
         });
     }
 
+    // Shared tune state so both the button handler and incoming
+    // backend "TUNE ON/OFF" updates can keep the button in sync.
+    var isTuneOn = false;
+
+    // Update the tune button's state (flag + on-screen label).
+    // Called from the click handler and when the backend reports a
+    // change (e.g. auto-stop after the tune duration expires).
+    function setTuneState(on) {
+        isTuneOn = on;
+        var tuneStateSpan = document.getElementById('tune_state');
+        if (tuneStateSpan)
+            tuneStateSpan.textContent = on ? 'ON' : 'OFF';
+    }
+
     // Function to check if tune should be disabled
     function checkTuneState() {
         const tuneButton = document.getElementById('tune_button');
@@ -4461,19 +4459,14 @@
 	    const tuneButton = document.getElementById('tune_button');
 	    tuneButton.addEventListener('click', function() {
 		    if (isTuneOn) {
-			    websocket_send('tune off');
-			    isTuneOn = false;
+			    websocket_send('TUNE OFF');
+			    setTuneState(false);
 		    } else {
-			    websocket_send('tune on');
-			    isTuneOn = true;
+			    websocket_send('TUNE ON');
+			    setTuneState(true);
 		    }
 	    });
 
-        // ePTT button handler
-        document.getElementById('ePTT').addEventListener('change', function() {
-            websocket_send('eptt ' + this.value.toLowerCase());
-        });
-        
         // Initialize sidetone slider
         document.getElementById('slider_SIDETONE').addEventListener('input', function() {
             websocket_send('sidetone ' + this.value);

@@ -1,4 +1,3 @@
-
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -29,7 +28,7 @@
 int bandtweak = 4;		// Band power array index the \bs command will target -n1qm
 int ext_ptt_enable = 0; // ADDED BY KF7YDU.
 char audio_card[32];
-static int tx_shift = 512;
+static int tx_shift = 600;  // old default was 512
 parametriceq tx_eq;
 parametriceq rx_eq;
 
@@ -74,7 +73,7 @@ void tr_switch(int tx_on);
 // if the Wisdom plans in the file were generated at the same or more rigorous level.
 #define WISDOM_MODE FFTW_MEASURE
 #define PLANTIME -1 // spend no more than plantime seconds finding the best FFT algorithm. -1 turns the platime cap off.
-char wisdom_file[] = "sbitx_wisdom.wis";
+char wisdom_file[64] = "sbitx_wisdom.wis"; /* overwritten in fft_init() with CPU-specific name */
 
 #define NOISE_ALPHA 0.9	   // Smoothing factor for DSP noise estimation 0.0->1.0 >responsive/>stable -> >responsive/>stable
 #define SIGNAL_ALPHA 0.90  // Smoothing factor for DSP observed power spectrum estimation 0.9->0.99 >responsive/>stable -> >responsive/>stable
@@ -95,6 +94,7 @@ static int tx_gain = 100;
 static int tx_compress = 0;
 static double spectrum_speed = 0.3;
 static int in_tx = 0;
+
 static int rx_tx_ramp = 0;
 static int sidetone = 2000000000;
 struct vfo tone_a, tone_b, am_carrier; // these are audio tone generators
@@ -105,7 +105,7 @@ struct filter *tx_filter; // convolution filter
 static double tx_amp = 0.0;
 static double alc_level = 1.0;
 static int tr_relay = 0;
-static int rx_pitch = 700; // used only to offset the lo for CW,CWR
+static int rx_pitch = 700;   // should probably us get_pitch() directly
 static int bridge_compensation = 100;
 static double voice_clip_level = 0.04;
 static int in_calibration = 1; // this turns off alc, clipping et al
@@ -117,6 +117,12 @@ double notch_freq = 0;		   // Notch frequency in Hz W2JON
 double notch_bandwidth = 0;	   // Notch bandwidth in Hz W2JON
 int compression_control_level; // Audio Compression level W2JON
 int txmon_control_level;	   // TX Monitor level W2JON
+
+// share the current tx_shift value for spectrum and WF display purposes
+int get_tx_shift(void) {
+	return tx_shift;
+}
+
 int get_rx_gain(void)
 {
 	// printf("rx_gain %d\n", rx_gain);
@@ -199,14 +205,22 @@ struct Queue qremote;
 
 void radio_tune_to(u_int32_t f)
 {
+	// tx_shift_hz now derived from tx_shift (no longer hardcoded 24000 here)
+	double tx_shift_hz = tx_shift * (96000.0 / MAX_BINS);
+	u_int32_t shift_hz = (u_int32_t)(tx_shift_hz + 0.5); // round so 5351 gets integers
+	// read pitch via get_pitch() rather than using the rx_pitch global: that
+	// global's compiled-in default (700) didn't match the PITCH field's own
+	// starting value (600, see "rx_pitch" field def in sbitx_gtk.c) and only
+	// ever got reconciled once the operator first touched the PITCH control
+	int pitch = get_pitch();
 	if (rx_list->mode == MODE_CW)
-		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - 24000 + TUNING_SHIFT - rx_pitch);
+		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - shift_hz + TUNING_SHIFT - pitch);
 	else if (rx_list->mode == MODE_CWR)
-		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - 24000 + TUNING_SHIFT + rx_pitch);
+		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - shift_hz + TUNING_SHIFT + pitch);
 	else
-		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - 24000 + TUNING_SHIFT);
+		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - shift_hz + TUNING_SHIFT);
 
-	//  printf("Setting radio rx_pitch %d\n", rx_pitch);
+	//  printf("Setting radio pitch %d\n", pitch);
 }
 long set_bfo_offset(int offset, long cur_freq)
 {
@@ -238,12 +252,54 @@ void fft_init()
 	memset(fft_out, 0, sizeof(fftw_complex) * MAX_BINS);
 	memset(fft_m, 0, sizeof(fftw_complex) * MAX_BINS / 2);
 
+	// Use a CPU-specific wisdom filename so that if the binary is run on
+	// different hardware (e.g. Pi 4 vs Pi Zero 2W), each gets its own
+	// optimised FFTW plan. FFTW_MEASURE plans generated on a Cortex-A72
+	// are not optimal on a Cortex-A53 (different pipelines, cache sizes).
+	// The CPU model string is read from /proc/cpuinfo and hashed into the filename.
+	{
+		char cpu_model[128] = "unknown";
+		FILE *cpuinfo = fopen("/proc/cpuinfo", "r");
+		if (cpuinfo) {
+			char line[256];
+			while (fgets(line, sizeof(line), cpuinfo)) {
+				if (strncmp(line, "Model name", 10) == 0 ||
+				    strncmp(line, "Hardware",   8) == 0 ||
+				    strncmp(line, "Model",      5) == 0) {
+					char *colon = strchr(line, ':');
+					if (colon) {
+						// trim whitespace and use first 40 chars
+						char *p = colon + 1;
+						while (*p == ' ' || *p == '\t') p++;
+						strncpy(cpu_model, p, sizeof(cpu_model)-1);
+						// strip newline
+						char *nl = strchr(cpu_model, '\n');
+						if (nl) *nl = '\0';
+						break;
+					}
+				}
+			}
+			fclose(cpuinfo);
+		}
+		// Build wisdom filename: sbitx_wisdom_<hash>.wis
+		// Use a simple djb2 hash of the CPU string to keep filename clean
+		unsigned long hash = 5381;
+		for (unsigned char *p = (unsigned char *)cpu_model; *p; p++)
+			hash = ((hash << 5) + hash) + *p;
+		snprintf(wisdom_file, sizeof(wisdom_file), "sbitx_wisdom_%08lx.wis", hash & 0xFFFFFFFF);
+		printf("FFTW wisdom file: %s  (CPU: %.40s)\n", wisdom_file, cpu_model);
+	}
+
 	fftw_set_timelimit(PLANTIME);
 	fftwf_set_timelimit(PLANTIME);
 	int e = fftw_import_wisdom_from_filename(wisdom_file);
 	if (e == 0)
 	{
-		printf("Generating Wisdom File...\n");
+		printf("No wisdom for this CPU — running FFTW_MEASURE (takes a few minutes on Pi Zero 2W)...\n");
+	}
+	else
+	{
+		printf("Loaded FFTW wisdom from %s\n", wisdom_file);
 	}
 	plan_fwd = fftw_plan_dft_1d(MAX_BINS, fft_in, fft_out, FFTW_FORWARD, WISDOM_MODE);			 // Was FFTW_ESTIMATE N3SB
 	plan_spectrum = fftw_plan_dft_1d(MAX_BINS, fft_in, fft_spectrum, FFTW_FORWARD, WISDOM_MODE); // Was FFTW_ESTIMATE N3SB
@@ -312,9 +368,15 @@ void spectrum_update()
 	// someone wants to try I Q channels
 	// in hardware
 
-	// this has been hand optimized to lower
-	// the inordinate cpu usage
-	for (int i = 1269; i < 1803; i++)
+  // adjusted to adapt to different center_bin value
+	//
+	// I think this is the traditional convention (reverted from the pitch-cancelling
+	// "spectrum analyzer" behavior): a zero-beat CW/CWR signal shows its
+	// peak offset from the needle by PITCH, same as the audible tone --
+	// the visible/audible coincidence is the zero-beat cue
+	int spectrum_update_start = MAX_BINS - tx_shift - 267;
+	int spectrum_update_end = spectrum_update_start + 534;
+	for (int i = spectrum_update_start; i < spectrum_update_end; i++)
 	{
 
 		fft_bins[i] = ((1.0 - spectrum_speed) * fft_bins[i]) +
@@ -1149,12 +1211,41 @@ int calculate_zero_beat(struct rx *r, double sampling_rate) {
 }
 
 
+// Section-timing instrumentation for rx_linear()/tx_process(), used to
+// diagnose ALSA underruns on Pi Zero 2W. Costs ~zero when built with this
+// set to 0 (all clock_gettime()/fprintf() calls compile out entirely).
+// Flip to 1 and rebuild any time you need the per-section/worst-call
+// breakdown again -- see chat history for how to read the output.
+#define RX_TX_TIMING_DEBUG 0
+
+#if RX_TX_TIMING_DEBUG
+// Shared wall-clock reference so rx_linear's and tx_process's periodic
+// reports (and sbitx_sound.c's loop-period warning) can be lined up
+// directly by elapsed real time, instead of inferring cadence indirectly.
+static double _rxtx_elapsed_seconds(void)
+{
+	static struct timespec epoch;
+	static int have_epoch = 0;
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (!have_epoch) { epoch = now; have_epoch = 1; }
+	return (now.tv_sec - epoch.tv_sec) + (now.tv_nsec - epoch.tv_nsec) / 1e9;
+}
+#endif
+
 // rx_linear with Spectral Subtraction and Wiener Filter DSP filtering - W2JON
 void rx_linear(int32_t *input_rx, int32_t *input_mic,
 			   int32_t *output_speaker, int32_t *output_tx, int n_samples)
 {
 	int i = 0;
 	double i_sample;
+
+	// --- Stage timing (temporary diagnostic, mirrors tx_process instrumentation) ---
+#if RX_TX_TIMING_DEBUG
+	struct timespec _rA, _rA2, _rB, _rC, _rD, _rD2, _rE, _rF;
+	clock_gettime(CLOCK_MONOTONIC, &_rA);
+#endif
+	// --- end preamble ---
 
 	// STEP 1: First add the previous M samples
 	// memcpy to replace for loop, ffts are 16 bytes
@@ -1166,7 +1257,7 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 	int m = 0;
 	for (i = MAX_BINS / 2; i < MAX_BINS; i++)
 	{
-		i_sample = (1.0 * input_rx[m]) / 200000000.0;
+		i_sample = (1.0 * input_rx[m]) / 100000000.0;
 		__real__ fft_m[m] = i_sample;
 		__imag__ fft_m[m] = 0;
 		__real__ fft_in[i] = i_sample;
@@ -1174,14 +1265,37 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		m++;
 	}
 
+#if RX_TX_TIMING_DEBUG
+	clock_gettime(CLOCK_MONOTONIC, &_rA2);  // after gather loop, before fwd FFT itself
+#endif
+
 	// STEP 3: Convert to frequency domain
 	my_fftw_execute(plan_fwd);
 
+#if RX_TX_TIMING_DEBUG
+	clock_gettime(CLOCK_MONOTONIC, &_rB);  // after fwd FFT execute
+#endif
+
 	// STEP 3B: Spectrum update for user interface
-	for (i = 0; i < MAX_BINS; i++)
-		__real__ fft_in[i] *= spectrum_window[i];
-	my_fftw_execute(plan_spectrum);
-	spectrum_update();
+	// Throttled: the waterfall/spectrum display doesn't need refreshing at the
+	// full audio-block rate (~93.75 Hz at 1024 samples/96kHz). Doing so was
+	// costing a full extra MAX_BINS-point FFT plus an MAX_BINS-length windowing
+	// multiply on every single call. fft_in isn't read again later in this
+	// function (it's fully rebuilt from fft_m next call), so skipping this
+	// most of the time is safe.
+	static int spectrum_decim = 0;
+	if (++spectrum_decim >= 6)   // ~15.6 Hz refresh, plenty for a display
+	{
+		spectrum_decim = 0;
+		for (i = 0; i < MAX_BINS; i++)
+			__real__ fft_in[i] *= spectrum_window[i];
+		my_fftw_execute(plan_spectrum);
+		spectrum_update();
+	}
+
+#if RX_TX_TIMING_DEBUG
+	clock_gettime(CLOCK_MONOTONIC, &_rC);  // after (throttled) spectrum FFT
+#endif
 
 	// STEP 4: Rotate the bins around by r->tuned_bin
 	struct rx *r = rx_list;
@@ -1340,10 +1454,10 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		if (dsp_enabled)
 		{
 			// Spectral Subtraction filter
+			static double previous_magnitude[MAX_BINS] = {0};
 			for (i = 0; i < MAX_BINS; i++)
 			{
 				double magnitude = cabs(r->fft_freq[i]);
-				double phase = carg(r->fft_freq[i]);
 				double noise_magnitude = noise_est[i];
 
 				// Calculate the SNR
@@ -1360,12 +1474,17 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 									magnitude - reduction_factor * noise_magnitude);
 
 				// Smoother bin-to-bin transitions (blend current and adjacent bins)
-				static double previous_magnitude[MAX_BINS] = {0};
 				new_magnitude = 0.9 * new_magnitude + 0.1 * previous_magnitude[i]; // Stronger weight on current bin
 				previous_magnitude[i] = new_magnitude;
 
-				// Reconstruct the frequency domain signal
-				r->fft_freq[i] = new_magnitude * cexp(I * phase);
+				// Rescale the bin directly instead of decomposing to magnitude/phase
+				// and reconstructing with cexp(I*phase). Scaling a complex number by
+				// a nonnegative real preserves its phase automatically, so this gets
+				// the identical result while dropping a carg() (atan2) and a cexp()
+				// (sin+cos) per bin -- previously two of the more expensive calls in
+				// this loop, done MAX_BINS times, every single audio callback.
+				double scale = (magnitude > 1e-12) ? (new_magnitude / magnitude) : 0.0;
+				r->fft_freq[i] *= scale;
 			}
 		}
 
@@ -1399,6 +1518,10 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		}
 	}
 
+#if RX_TX_TIMING_DEBUG
+	clock_gettime(CLOCK_MONOTONIC, &_rD);  // after notch/noise-est/spectral-subtraction/ANR
+#endif
+
 	// STEP 5: Zero out the other sideband
 	switch (r->mode)
 	{
@@ -1427,8 +1550,16 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 		r->fft_freq[i] *= r->filter->fir_coeff[i];
 	}
 
+#if RX_TX_TIMING_DEBUG
+	clock_gettime(CLOCK_MONOTONIC, &_rD2);  // after sideband-zero + FIR multiply, before rev FFT itself
+#endif
+
 	// STEP 7: Convert back to time domain
 	my_fftw_execute(r->plan_rev);
+
+#if RX_TX_TIMING_DEBUG
+	clock_gettime(CLOCK_MONOTONIC, &_rE);  // after rev FFT execute
+#endif
 
 	// STEP 8: AGC
 	agc2(r);
@@ -1506,6 +1637,50 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 			q_write(&qremote, output_speaker[i]);
 		}
 	}
+
+#if RX_TX_TIMING_DEBUG
+	clock_gettime(CLOCK_MONOTONIC, &_rF);  // after AGC, modem_rx, EQ/limiter, decimation
+
+	{
+		static long accum_gather = 0, accum_fwd_fft = 0, accum_spectrum = 0, accum_dsp = 0;
+		static long accum_sb_fir = 0, accum_rev_fft = 0, accum_tail = 0, accum_total = 0;
+		static long max_us_seen = 0;
+		static int  section_cnt = 0;
+
+		long us_gather   = (_rA2.tv_sec-_rA.tv_sec)*1000000L + (_rA2.tv_nsec-_rA.tv_nsec)/1000L;
+		long us_fwd_fft  = (_rB.tv_sec-_rA2.tv_sec)*1000000L + (_rB.tv_nsec-_rA2.tv_nsec)/1000L;
+		long us_spectrum = (_rC.tv_sec-_rB.tv_sec)*1000000L + (_rC.tv_nsec-_rB.tv_nsec)/1000L;
+		long us_dsp      = (_rD.tv_sec-_rC.tv_sec)*1000000L + (_rD.tv_nsec-_rC.tv_nsec)/1000L;
+		long us_sb_fir   = (_rD2.tv_sec-_rD.tv_sec)*1000000L + (_rD2.tv_nsec-_rD.tv_nsec)/1000L;
+		long us_rev_fft  = (_rE.tv_sec-_rD2.tv_sec)*1000000L + (_rE.tv_nsec-_rD2.tv_nsec)/1000L;
+		long us_tail     = (_rF.tv_sec-_rE.tv_sec)*1000000L + (_rF.tv_nsec-_rE.tv_nsec)/1000L;
+		long us_total    = us_gather + us_fwd_fft + us_spectrum + us_dsp + us_sb_fir + us_rev_fft + us_tail;
+
+		accum_gather  += us_gather;
+		accum_fwd_fft += us_fwd_fft;
+		accum_spectrum+= us_spectrum;
+		accum_dsp     += us_dsp;
+		accum_sb_fir  += us_sb_fir;
+		accum_rev_fft += us_rev_fft;
+		accum_tail    += us_tail;
+		accum_total   += us_total;
+		if (us_total > max_us_seen) max_us_seen = us_total;
+		section_cnt++;
+
+		if (section_cnt >= 94) {  // ~1 second at 96kHz/1024 frames
+			double pct = 100.0 * accum_total / 1e6;
+			fprintf(stderr,
+				"t=%.2fs [rx_linear] total=%ldus (cpu=%.2f%%)  worst_call=%ldus  gather=%ldus  fwd_fft=%ldus  "
+				"spectrum=%ldus  dsp=%ldus  sb_fir=%ldus  rev_fft=%ldus  tail=%ldus\n",
+				_rxtx_elapsed_seconds(), accum_total, pct, max_us_seen, accum_gather, accum_fwd_fft,
+				accum_spectrum, accum_dsp, accum_sb_fir, accum_rev_fft, accum_tail);
+			accum_gather = accum_fwd_fft = accum_spectrum = accum_dsp = 0;
+			accum_sb_fir = accum_rev_fft = accum_tail = accum_total = 0;
+			max_us_seen = 0;
+			section_cnt = 0;
+		}
+	}
+#endif
 }
 /* read_power() has been removed.
  * The ATtiny85 SWR bridge at I2C 0x8 is no longer present in hardware.
@@ -1528,6 +1703,16 @@ void tx_process(
 	int32_t *output_speaker, int32_t *output_tx,
 	int n_samples)
 {
+  // --- per-call timing instrumentation ---
+#if RX_TX_TIMING_DEBUG
+  struct timespec ts_start, ts_end;
+  clock_gettime(CLOCK_MONOTONIC, &ts_start);
+ 
+  static int      perf_call_count = 0;  // calls this reporting period
+  const  int      PERF_PERIOD    = 94; // report every 94 calls (1 second at 10.6 ms per call)
+#endif
+  // end of timing code
+ 
 	int i;
 	double i_sample, q_sample, i_carrier;
 	
@@ -1539,9 +1724,9 @@ void tx_process(
 		// Get upsampled browser mic audio
 		upsample_browser_mic(browser_mic_samples, n_samples);
 	}
-
+ 
 	struct rx *r = tx_list;
-
+ 
 	// fix the burst at the start of transmission
 	if (tx_process_restart)
 	{
@@ -1549,16 +1734,16 @@ void tx_process(
 		tx_process_restart = 0;
 	}
 	static int eq_initialized = 0;
-
+ 
 	if (!eq_initialized)
 	{
 		init_eq(&tx_eq, "tx");
 		eq_initialized = 1;
 	}
-
+ 
 	if (in_tx && (r->mode != MODE_DIGITAL && r->mode != MODE_FT8 && r->mode != MODE_2TONE && r->mode != MODE_CW && r->mode != MODE_CWR))
 	{
-
+ 
 		// Apply compression is the value of the dial is set to 1-10 (0 = off)
 		if (compression_control_level >= 1 && compression_control_level <= 10)
 		{
@@ -1575,13 +1760,13 @@ void tx_process(
 					temp_input_mic[i] = (float)input_mic[i] / 2000000000.0;
 				}
 			}
-
+ 
 			for (int i = 0; i < 5 && i < n_samples; i++)
 			{
 			}
 			// Now we can call the apply_fixed_compression function with the parameters
 			apply_fixed_compression(temp_input_mic, n_samples, compression_control_level);
-
+ 
 			for (int i = 0; i < 5 && i < n_samples; i++)
 			{
 			}
@@ -1598,7 +1783,7 @@ void tx_process(
 			{
 			}
 		}
-
+ 
 		if (eq_is_enabled == 1)
 		{
 			if (use_browser_mic) {
@@ -1608,7 +1793,7 @@ void tx_process(
 			}
 		}
 	}
-
+ 
 	if (mute_count && (r->mode == MODE_USB || r->mode == MODE_LSB || r->mode == MODE_AM))
 	{
 		memset(input_mic, 0, n_samples * sizeof(int32_t));
@@ -1620,15 +1805,23 @@ void tx_process(
 	// first add the previous M samples
 	for (i = 0; i < MAX_BINS / 2; i++)
 		fft_in[i] = fft_m[i];
-
+ 
 	int m = 0;
 	int j = 0;
-
+ 
+	// --- Section timing (temporary diagnostic for Pi Zero 2W) ---
+	// Set RX_TX_TIMING_DEBUG to 1 (near rx_linear, above) to re-enable.
+#if RX_TX_TIMING_DEBUG
+	struct timespec _tA, _tB, _tC, _tD;
+	clock_gettime(CLOCK_MONOTONIC, &_tA);
+#endif
+	// --- end section timing preamble ---
+ 
 	// double max = -10.0, min = 10.0;
 	// gather the samples into a time domain array
 	for (i = MAX_BINS / 2; i < MAX_BINS; i++)
 	{
-
+ 
 		if (r->mode == MODE_2TONE)
 			i_sample = (1.0 * (vfo_read(&tone_a) + vfo_read(&tone_b))) / 50000000000.0;
 		else if (r->mode == MODE_CALIBRATE)
@@ -1657,7 +1850,7 @@ void tx_process(
 				i_sample = (1.0 * input_mic[j]) / 2000000000.0;
 			}
 		}
-
+ 
 		// clip the overdrive to prevent damage up the processing chain, PA
 		if (r->mode == MODE_USB || r->mode == MODE_LSB || r->mode == MODE_AM)
 		{
@@ -1666,7 +1859,7 @@ void tx_process(
 			else if (i_sample > voice_clip_level)
 				i_sample = voice_clip_level;
 		}
-
+ 
 		// Don't echo the voice modes
 		if (r->mode == MODE_USB || r->mode == MODE_LSB || r->mode == MODE_AM || r->mode == MODE_NBFM)
 		{
@@ -1687,39 +1880,42 @@ void tx_process(
 			output_speaker[j] = i_sample * sidetone;
 			q_sample = 0;
 		}
-
+ 
 		j++;
-
+ 
 		__real__ fft_m[m] = i_sample;
 		__imag__ fft_m[m] = q_sample;
-
+ 
 		__real__ fft_in[i] = i_sample;
 		__imag__ fft_in[i] = q_sample;
 		m++;
 	}
-
+ 
 	// push the samples to the remote audio queue, decimated to 16000 samples/sec
 	for (i = 0; i < MAX_BINS / 2; i += 6) {
 		q_write(&qremote, output_speaker[i]);
 	}
-
+ 
+#if RX_TX_TIMING_DEBUG
+	clock_gettime(CLOCK_MONOTONIC, &_tB);  // after sample generation
+#endif
 	// convert to frequency
 	fftw_execute(plan_fwd);
-
+ 
 	// NOTE: fft_out holds the fft output (in freq domain) of the
 	// incoming mic samples
 	// the naming is unfortunate
-
+ 
 	// apply the filter
 	for (i = 0; i < MAX_BINS; i++)
 		fft_out[i] *= tx_filter->fir_coeff[i];
-
+ 
 	// the usb extends from 0 to MAX_BINS/2 - 1,
 	// the lsb extends from MAX_BINS - 1 to MAX_BINS/2 (reverse direction)
 	// zero out the other sideband
-
+ 
 	// TBD: Something strange is going on, this should have been the otherway
-
+ 
 	if (r->mode == MODE_LSB || r->mode == MODE_CWR)
 		// zero out the LSB
 		for (i = 0; i < MAX_BINS / 2; i++)
@@ -1740,7 +1936,7 @@ void tx_process(
 		__real__ fft_out[i] = __real__ fft_out[i] * ssb_val;
 		__imag__ fft_out[i] = __imag__ fft_out[i] * ssb_val;
 	}
-
+ 
 	// now rotate to the tx_bin
 	// rememeber the AM is already a carrier modulated at 24 KHz
 	int shift = tx_shift;
@@ -1755,10 +1951,13 @@ void tx_process(
 			b = b + MAX_BINS;
 		r->fft_freq[b] = fft_out[i];
 	}
-
+ 
 	// the spectrum display is updated
 	// spectrum_update();
-
+ 
+#if RX_TX_TIMING_DEBUG
+	clock_gettime(CLOCK_MONOTONIC, &_tC);  // after fwd FFT + filter + rotate
+#endif
 	// convert back to time domain
 	fftw_execute(r->plan_rev);
 	int min = 10000000;
@@ -1767,7 +1966,14 @@ void tx_process(
 	for (i = 0; i < MAX_BINS / 2; i++)
 	{
 		double s = creal(r->fft_time[i + (MAX_BINS / 2)]);
-		output_tx[i] = s * scale * tx_amp;
+	    // applying the ALC below got dropped at one point
+		output_tx[i] = s * scale * tx_amp * alc_level;
+ 		if (min > output_tx[i])
+ 			min = output_tx[i];
+ 		if (max < output_tx[i])
+ 		if (min > output_tx[i])
+ 			min = output_tx[i];
+ 		if (max < output_tx[i])
 		if (min > output_tx[i])
 			min = output_tx[i];
 		if (max < output_tx[i])
@@ -1775,106 +1981,157 @@ void tx_process(
 		// output_tx[i] = 0;
 	}
 	//	printf("min %d, max %d\n", min, max);
-	
-	/* read_power() calls removed: power/SWR data now comes from RP2040 front panel */
+#if RX_TX_TIMING_DEBUG
+	clock_gettime(CLOCK_MONOTONIC, &_tD);  // after rev FFT + output copy
+#endif
+	// (old per-call snapshot print removed -- it printed one arbitrary call's
+	//  numbers every ~94 calls rather than an average, which is noisy and
+	//  doesn't show worst-case behavior. Replaced by the accumulated report
+	//  at the end of the function, which also now covers the front-matter
+	//  (mic/EQ/compression/mute + STEP1 copy) and tail (sdr_modulation_update)
+	//  that this snapshot never captured.)
+ 
+	// read_power() is not called here. On this hardware the Pico 2040 (I2C address
+	// 0x0a) handles SWR/power measurement and sends the data as text via zbitx_poll().
+	// The old read_power() used address 0x08 (wrong) and binary protocol (wrong);
+	// it was dead code that never successfully read anything on this hardware.
+ 
+	// sdr_modulation_update is called once here.
+	// Previously it was called twice (once here and once at the very end after
+	// the spectrum block), which was a duplicate doing the same work twice.
 	sdr_modulation_update(output_tx, MAX_BINS/2, tx_amp);
-
-	// Instead of using sdr_modulation_update, we'll update the spectrum data directly
-	// This allows the TX audio to be displayed in the spectrum and waterfall
-	
-	// Create input buffer for FFT
-	complex float *tx_fft_in = (complex float *)malloc(sizeof(complex float) * MAX_BINS);
-	
-	// Calculate DC offset (average) to remove it
-	float dc_offset = 0;
-	for (i = 0; i < MAX_BINS / 2; i++) {
-		dc_offset += output_tx[i];
-	}
-	dc_offset /= (MAX_BINS / 2);
-	
-	// Copy the output_tx samples to the FFT input buffer with a window function
-	for (i = 0; i < MAX_BINS / 2; i++) {
-		// Apply Hann window for better spectral resolution
-		float window = 0.5 * (1 - cos(2 * M_PI * i / (MAX_BINS / 2 - 1)));
-		// Remove DC offset and scale down
-		tx_fft_in[i] = (output_tx[i] - dc_offset) * window / (tx_amp * 150000000.0); // Significantly reduced scaling
-	}
-	
-	// Zero-pad the second half
-	for (i = MAX_BINS / 2; i < MAX_BINS; i++) {
-		tx_fft_in[i] = 0;
-	}
-	
-	// Use the existing FFT infrastructure
-	for (i = 0; i < MAX_BINS; i++) {
-		__real__ fft_in[i] = crealf(tx_fft_in[i]);
-		__imag__ fft_in[i] = 0;
-	}
-	
-	// Perform FFT using the existing plan
-	fftw_execute(plan_fwd);
-	
-	// Update the fft_spectrum array with the FFT results
-	// This is important because the spectrum_update function uses this array
-	
-	// First pass - enhanced detail with frequency-dependent scaling
-	for (i = 0; i < MAX_BINS; i++) {
-		// Calculate bin frequency relative to center (for frequency-dependent scaling)
-		int bin_from_center = i - MAX_BINS / 2;
-		if (bin_from_center < 0) bin_from_center = -bin_from_center;
-		
-		// Apply slightly higher gain to mid-range frequencies where voice details matter most
-		float freq_scale = 1.0;
-		if (bin_from_center > 10 && bin_from_center < 100) {
-			freq_scale = 1.3; // Boost mid-range frequencies
-		}
-		
-		// Store the FFT results with enhanced detail
-		fft_spectrum[i] = fft_out[i] * 0.025 * freq_scale; // Slightly increased from 0.02 for more detail
-	}
-	
-	// Apply a more refined smoothing that preserves detail while reducing noise
-	complex float *smoothed = (complex float *)malloc(sizeof(complex float) * MAX_BINS);
-	
-	// Copy first and last points as-is
-	smoothed[0] = fft_spectrum[0];
-	smoothed[MAX_BINS-1] = fft_spectrum[MAX_BINS-1];
-	
-	// Apply minimal smoothing to preserve maximum detail
-	for (i = 1; i < MAX_BINS-1; i++) {
-		// Use weighted average with heavy weight on current bin: 80% current bin, 10% each adjacent bin
-		smoothed[i] = fft_spectrum[i-1] * 0.1 + fft_spectrum[i] * 0.8 + fft_spectrum[i+1] * 0.1;
-		
-		// Apply stronger contrast enhancement to make fine details more visible
-		float mag = cabsf(smoothed[i]);
-		if (mag > 0) {
-			// Use stronger non-linear enhancement to reveal subtle details
-			smoothed[i] *= (1.0 + 0.5 * log10f(mag + 1.0));
-			
-			// Add slight sharpening effect to enhance edges between frequency components
-			if (i > 1 && i < MAX_BINS-2) {
-				complex float edge_detect = smoothed[i] * 2.0 - smoothed[i-1] * 0.5 - smoothed[i+1] * 0.5;
-				smoothed[i] = smoothed[i] * 0.7 + edge_detect * 0.3;
+ 
+	// TX Spectrum display update.
+	//
+	// The original code ran a full extra fftw_execute(plan_fwd) + two malloc()/free()
+	// + a 2048-iteration smoothing loop with cabsf/log10f ON EVERY AUDIO BLOCK.
+	// On Pi Zero 2W (1GHz A53) this added ~5-8ms per block on top of the two main
+	// FFTs, pushing total time to 16-22ms against a 10.67ms budget — causing
+	// continuous ALSA underruns in all TX modes, worst in CW.
+	//
+	// Fix: rate-limit to every TX_SPECTRUM_INTERVAL blocks (~10 Hz update rate).
+	// The waterfall/spectrum display updates at human-visible rates (<<30fps) so
+	// there is no perceptible quality difference. The static pre-allocated buffers
+	// eliminate the malloc/free penalty from the audio hot path entirely.
+	//
+	// TX_SPECTRUM_INTERVAL of 10 = ~9.4 Hz at 96kHz/1024 frames. Increase if
+	// you still see underruns; decrease toward 1 if you want faster waterfall.
+#define TX_SPECTRUM_INTERVAL 10
+	// TX spectrum/waterfall display disabled entirely. tx_process() only
+	// runs while in_tx is set, so this block was pure display-generation
+	// overhead (DC offset pass, Hann window, an extra fftw_execute(plan_fwd),
+	// and a log10f/cabsf smoothing loop over MAX_BINS) on every TX mode, not
+	// just CW. If TX spectrum display is wanted again later, re-enable this
+	// block and consider gating it by whether the spectrum window is
+	// actually visible, rather than running it unconditionally in the
+	// audio hot path.
+#if 0
+	{
+		static int tx_spectrum_counter = 0;
+		static complex float tx_fft_buf[MAX_BINS];   // pre-allocated, no malloc
+		static complex float tx_smoothed[MAX_BINS];  // pre-allocated, no malloc
+ 
+		if (++tx_spectrum_counter >= TX_SPECTRUM_INTERVAL) {
+			tx_spectrum_counter = 0;
+ 
+			// Calculate DC offset to remove it
+			float dc_offset = 0;
+			for (i = 0; i < MAX_BINS / 2; i++)
+				dc_offset += output_tx[i];
+			dc_offset /= (MAX_BINS / 2);
+ 
+			// Fill FFT input: Hann-windowed, DC-removed, scaled
+			for (i = 0; i < MAX_BINS / 2; i++) {
+				float window = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (MAX_BINS / 2 - 1)));
+				tx_fft_buf[i] = (output_tx[i] - dc_offset) * window / (tx_amp * 150000000.0f);
 			}
-		}
+			for (i = MAX_BINS / 2; i < MAX_BINS; i++)
+				tx_fft_buf[i] = 0;
+ 
+			// Load into fftw input buffer and execute
+			for (i = 0; i < MAX_BINS; i++) {
+				__real__ fft_in[i] = crealf(tx_fft_buf[i]);
+				__imag__ fft_in[i] = 0;
+			}
+			fftw_execute(plan_fwd);
+ 
+			// Build fft_spectrum with frequency-dependent scaling
+			for (i = 0; i < MAX_BINS; i++) {
+				int bin_from_center = i - MAX_BINS / 2;
+				if (bin_from_center < 0) bin_from_center = -bin_from_center;
+				float freq_scale = (bin_from_center > 10 && bin_from_center < 100) ? 1.3f : 1.0f;
+				fft_spectrum[i] = fft_out[i] * 0.025f * freq_scale;
+			}
+ 
+			// Smooth spectrum: 80% current bin, 10% each neighbour
+			tx_smoothed[0]          = fft_spectrum[0];
+			tx_smoothed[MAX_BINS-1] = fft_spectrum[MAX_BINS-1];
+			for (i = 1; i < MAX_BINS-1; i++) {
+				tx_smoothed[i] = fft_spectrum[i-1] * 0.1f
+				               + fft_spectrum[i]   * 0.8f
+				               + fft_spectrum[i+1] * 0.1f;
+				float mag = cabsf(tx_smoothed[i]);
+				if (mag > 0) {
+					tx_smoothed[i] *= (1.0f + 0.5f * log10f(mag + 1.0f));
+					if (i > 1 && i < MAX_BINS-2) {
+						complex float edge = tx_smoothed[i]   * 2.0f
+						                   - tx_smoothed[i-1] * 0.5f
+						                   - tx_smoothed[i+1] * 0.5f;
+						tx_smoothed[i] = tx_smoothed[i] * 0.7f + edge * 0.3f;
+					}
+				}
+			}
+			for (i = 0; i < MAX_BINS; i++)
+				fft_spectrum[i] = tx_smoothed[i];
+ 
+			spectrum_update();
+		} // end tx_spectrum_counter block
 	}
-	
-	// Copy smoothed spectrum back to fft_spectrum
-	for (i = 0; i < MAX_BINS; i++) {
-		fft_spectrum[i] = smoothed[i];
-	}
-	
-	// Free the temporary buffer
-	free(smoothed);
-	
-	// Call the standard spectrum update function to ensure consistent processing
-	spectrum_update();
-	
-	// Clean up
-	free(tx_fft_in);
+#endif
+ 
+  // --- timing: accumulate and report (per-section + worst-call) ---
+#if RX_TX_TIMING_DEBUG
+  clock_gettime(CLOCK_MONOTONIC, &ts_end);
 
-	// The old sdr_modulation_update function is still called for API compatibility
-	sdr_modulation_update(output_tx, MAX_BINS / 2, tx_amp);
+  {
+    static long accum_front = 0, accum_gather = 0, accum_fwd_fft = 0;
+    static long accum_rev_fft = 0, accum_tail = 0, accum_total = 0;
+    static long max_us_seen = 0;
+
+    long us_front   = (_tA.tv_sec-ts_start.tv_sec)*1000000L + (_tA.tv_nsec-ts_start.tv_nsec)/1000L;
+    long us_gather  = (_tB.tv_sec-_tA.tv_sec)*1000000L      + (_tB.tv_nsec-_tA.tv_nsec)/1000L;
+    long us_fwd_fft = (_tC.tv_sec-_tB.tv_sec)*1000000L      + (_tC.tv_nsec-_tB.tv_nsec)/1000L;
+    long us_rev_fft = (_tD.tv_sec-_tC.tv_sec)*1000000L      + (_tD.tv_nsec-_tC.tv_nsec)/1000L;
+    long us_tail    = (ts_end.tv_sec-_tD.tv_sec)*1000000L   + (ts_end.tv_nsec-_tD.tv_nsec)/1000L;
+    long us_total   = us_front + us_gather + us_fwd_fft + us_rev_fft + us_tail;
+
+    accum_front   += us_front;
+    accum_gather  += us_gather;
+    accum_fwd_fft += us_fwd_fft;
+    accum_rev_fft += us_rev_fft;
+    accum_tail    += us_tail;
+    accum_total   += us_total;
+    if (us_total > max_us_seen) max_us_seen = us_total;
+
+    perf_call_count++;
+
+    if (perf_call_count >= PERF_PERIOD) {
+      double pct_cpu = (double)accum_total / 1e6 * 100.0;
+
+      fprintf(stderr,
+        "t=%.2fs [tx_process] total=%ldus (cpu=%.2f%%)  worst_call=%ldus  front=%ldus  gather=%ldus  "
+        "fwd_fft+filter=%ldus  rev_fft+out=%ldus  tail=%ldus\n",
+        _rxtx_elapsed_seconds(), accum_total, pct_cpu, max_us_seen, accum_front, accum_gather,
+        accum_fwd_fft, accum_rev_fft, accum_tail);
+
+      accum_front = accum_gather = accum_fwd_fft = 0;
+      accum_rev_fft = accum_tail = accum_total = 0;
+      max_us_seen = 0;
+      perf_call_count = 0;
+    }
+  }
+#endif
+  // end of timing code
 }
 
 /*
@@ -1908,10 +2165,13 @@ void set_rx_filter()
 	// on AM filter at the IF level, instead of the baseband
 	if (rx_list->mode == MODE_AM)
 	{
-		printf("Setting AM filter\n");
+		//printf("Setting AM filter\n");
+		// Centered on tx_shift's Hz value (was hardcoded 24000, same class
+		// of bug as radio_tune_to() -- see radio_tune_to_center_bin_fix).
+		double if_center_hz = tx_shift * (96000.0 / MAX_BINS);
 		filter_tune(rx_list->filter,
-					(1.0 * (24000 - rx_list->high_hz)) / 96000.0,
-					(1.0 * (24000 + rx_list->high_hz)) / 96000.0,
+					(if_center_hz - rx_list->high_hz) / 96000.0,
+					(if_center_hz + rx_list->high_hz) / 96000.0,
 					5);
 	}
 	else if (rx_list->mode == MODE_LSB || rx_list->mode == MODE_CWR)
@@ -1995,6 +2255,11 @@ static int hw_settings_handler(void *user, const char *section,
 		band_power[hw_init_index++].scale = atof(value);
 	if (!strcmp(name, "bfo_freq"))
 		bfo_freq = atoi(value);
+	// center_bin setting restored, this had
+	// been hardcoded (as tx_shift) with no config hook at all, so per-unit
+	// hardware calibration (e.g. center_bin=600) could never be applied here.
+	if (!strcmp(name, "center_bin"))
+		tx_shift = atoi(value);
 	// Add variable for SSB/CW Power Factor Adjustment W9JES
 	if (!strcmp(name, "ssb_val"))
 		ssb_val = atof(value);
@@ -2033,7 +2298,7 @@ static void read_hw_ini()
 */
 void set_tx_power_levels()
 {
-	 printf("Setting tx_power drive to %d\n", tx_drive);
+	 //printf("Setting tx_power drive to %d\n", tx_drive);
 	// int tx_power_gain = 0;
 
 	// search for power in the approved bands
@@ -2046,7 +2311,7 @@ void set_tx_power_levels()
 			tx_amp = (1.0 * tx_drive * band_power[i].scale);
 		}
 	}
-		printf("tx_amp is set to %g for %d drive\n", tx_amp, tx_drive);
+		//printf("tx_amp is set to %g for %d drive\n", tx_amp, tx_drive);
 	// we keep the audio card output 'volume' constant'
 	sound_mixer(audio_card, "Master", 100);
 	sound_mixer(audio_card, "Capture", tx_gain);
@@ -2367,8 +2632,9 @@ void setup()
 	
 	add_rx(7000000, MODE_LSB, -3000, -300);
 	add_tx(7000000, MODE_LSB, -3000, -300);
-	rx_list->tuned_bin = 512;
-	tx_list->tuned_bin = 512;
+	// tuned_bin now follows tx_shift (was separately hardcoded to 512)
+	rx_list->tuned_bin = tx_shift;
+	tx_list->tuned_bin = tx_shift;
 	tx_init(7000000, MODE_LSB, -3000, -150);
 
 	/* Version detection: ATtiny85 SWR bridge at I2C 0x8 has been removed.
@@ -2379,13 +2645,18 @@ void setup()
 
     printf("hw version: %d\n", sbitx_version);
 	setup_audio_codec();
+
 	sound_thread_start("plughw:0,0");
 
 	sleep(1); // why? to allow the aloop to initialize?
 
 	vfo_start(&tone_a, 700, 0);
 	vfo_start(&tone_b, 1900, 0);
-	vfo_start(&am_carrier, 24000, 0);
+	// am_carrier is the actual suppressed-carrier oscillator tx_process()
+	// uses to build the real AM TX signal
+	// It must track tx_shift's Hz value or
+	// AM mode transmits at the wrong frequency once center_bin != 512.
+	vfo_start(&am_carrier, (int)(tx_shift * (96000.0 / MAX_BINS) + 0.5), 0);
 	delay(2000);
 	//	pf_debug = fopen("am_test.raw", "w");
 }
@@ -2438,6 +2709,9 @@ void sdr_request(char *request, char *response)
 
 		// set the tx mode to that of the rx1
 		tx_list->mode = rx_list->mode;
+
+		// Retune the LO on every mode change
+		radio_tune_to(freq_hdr);
 
 		// An interesting but non-essential note:
 		// the sidebands inverted twice, to come out correctly after all
@@ -2527,6 +2801,17 @@ void sdr_request(char *request, char *response)
 	else if (!strcmp(cmd, "rx_pitch"))
 	{
 		rx_pitch = atoi(value);
+		// radio_tune_to() includes the CW/CWR pitch offset into the LO
+		// but it's normally only invoked on a dial-frequency
+		// change. Without this update the LO keeps the *old* pitch offset while
+		// cw_tx_get_sample()'s audio oscillator jumps to the new pitch almost
+		// immediately and the mismatch shows up as the transmitted frequency
+		// moving by the amount the pitch was changed. Retuning here keeps the
+		// LO offset and the TX audio tone in lockstep so the far station's
+		// dial never moves, regardless of pitch. Only CW/CWR use pitch in
+		// radio_tune_to(), so this is a no-op in every other mode.
+		if (rx_list->mode == MODE_CW || rx_list->mode == MODE_CWR)
+			radio_tune_to(freq_hdr);
 	}
 	else if (!strcmp(cmd, "tx_gain"))
 	{

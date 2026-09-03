@@ -1,3 +1,6 @@
+#ifndef SDR_H
+#define SDR_H
+
 /*
 
 Overview:
@@ -60,6 +63,8 @@ have continuos waveform.
 
 */
 
+/* ---------------- Queue ---------------- */
+
 struct Queue
 {
   int id;
@@ -79,6 +84,8 @@ int q_write(struct Queue *p, int w);
 void q_empty(struct Queue *p);
 #define SAMPLE_RATE 48000
 #define MAX_BINS 2048
+
+/* ---------------- FFT / spectrum ---------------- */
 
 /*
 All the incoming samples are converted to frequency domain in sound_process(). 
@@ -101,7 +108,7 @@ extern float fft_bins[];
 extern int spectrum_plot[];
 extern struct filter *ssb;
 
-//vfo definitions
+/* ---------------- VFO ---------------- */
 
 #define MAX_PHASE_COUNT (16385)
 struct vfo {
@@ -114,8 +121,8 @@ void vfo_init_phase_table();
 void vfo_start(struct vfo *v, int frequency_hz, int start_phase);
 int vfo_read(struct vfo *v);
 
+/* ---------------- Filter ---------------- */
 
-// the filter definitions
 struct filter {
 	complex float *fir_coeff;
 	complex float *overlap;
@@ -131,6 +138,9 @@ void filter_print(struct filter *f);
 long set_bfo_offset(int offset,long freq);
 void resetup_oscillators();
 int get_bfo_offset();
+
+/* ---------------- Complex-number math helpers ---------------- */
+
 // Complex norm (sum of squares of real and imaginary parts)
 static inline float const cnrmf(const complex float x){
   return crealf(x)*crealf(x) + cimagf(x) * cimagf(x);
@@ -140,6 +150,8 @@ static inline double const cnrm(const complex double x){
 }
 
 #define power2dB(x) (10*log10f(x))
+
+/* ---------------- Modes ---------------- */
 
 #define MAX_MODES 11 
 
@@ -155,6 +167,8 @@ static inline double const cnrm(const complex double x){
 #define MODE_DIGITAL 9 
 #define MODE_2TONE 10 
 #define MODE_CALIBRATE 11 
+
+/* ---------------- RX chain ---------------- */
 
 struct rx {
 	long tuned_bin;					//tuned bin (this should translate to freq) 
@@ -196,7 +210,8 @@ void cmd_exec(char *cmd);
 
 void sdr_modulation_update(int32_t *samples, int count, double scale_up);
 
-/* from modems.c */
+/* ---------------- Modem dispatch (modems.c) ---------------- */
+
 void modem_rx(int mode, int32_t *samples, int count);
 void modem_set_pitch(int pitch, int mode);
 void modem_init();
@@ -205,6 +220,8 @@ int	get_tx_data_length();
 void modem_poll(int mode);
 float modem_next_sample(int mode);
 void modem_abort();
+
+/* ---------------- TX control ---------------- */
 
 int is_in_tx();
 
@@ -218,7 +235,10 @@ int get_passband_bw();
 void hamlib_tx(int tx_on);
 int get_default_passband_bw();
 int get_pitch();
+int get_tx_shift(void);
 time_t time_sbitx();
+
+/* ---------------- CW keyer (modem_cw.c) ---------------- */
 
 //cw defines, these are bitfields, hence, powers of 2
 #define CW_IDLE (0)
@@ -230,46 +250,60 @@ time_t time_sbitx();
 #define CW_DOWN (32) 
 #define CW_SQUEEZE (64)
 
-
 //straight key, iambic, keyboard
 #define CW_STRAIGHT 0
 #define CW_IAMBIC 1
 #define CW_IAMBICB 2	
-#define CW_KBD 3
-//#define CW_SIDESWIPE 4 // not supported in keyer
 #define CW_ULTIMATIC 5
 #define CW_BUG 6
+#define CW_KBD 3
 
-int key_poll();
+int key_poll(int input_method);
 int key_poll2();
 int get_cw_delay();
 int	get_data_delay();
 int get_cw_input_method();
-int	get_data_delay();
 int get_cw_tx_pitch();
 int get_modem_pitch();
 int	get_wpm();
+void cw_set_pitch(int hz);
+
+/* ---------------- FT8 ---------------- */
+
 #define FT8_AUTO 2
 #define FT8_SEMI 1
 #define FT8_MANUAL 0
 void ft8_setmode(int config);
 
+/* ---------------- Telnet ---------------- */
+
 void telnet_open(char *server);
 int telnet_write(char *text);
 void telnet_close();
+
+/* ---------------- AGC / recording ---------------- */
+
 double agc2(struct rx *r);
 FILE *wav_start_writing(const char* path);
+
+/* ---------------- Multicast ---------------- */
 
 #define MULTICAST_ADDR "224.0.0.1"
 #define MULTICAST_PORT 5005
 #define MULTICAST_MAX_BUFFER_SIZE 1024
 
-// S-Meter
+/* ---------------- S-Meter ---------------- */
+
 int get_rx_gain(void);
+
+/* ---------------- Audio ---------------- */
 
 //Loopback play reset
 void sound_reset(int force);
 
-// Zero beat detection 
+/* ---------------- Zero-beat detection ---------------- */
+
 extern int calculate_zero_beat(struct rx *r, double sampling_rate);
 extern int zero_beat_min_magnitude;
+
+#endif /* SDR_H */

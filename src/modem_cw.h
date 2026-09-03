@@ -5,6 +5,7 @@ void cw_abort();
 void cw_tx(char *message, int freq);
 void cw_poll(int bytes_available, int tx_is_on);
 float cw_next_sample();
+void cw_set_pitch(int hz);
 
 #define N_BINS 128
 #define INIT_TONE 600

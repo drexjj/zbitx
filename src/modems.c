@@ -14,9 +14,7 @@
 #include <time.h>
 #include <stdbool.h>
 #include <sys/types.h>
-#include <stdint.h>
 #include <errno.h>
-#include <time.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
@@ -37,7 +35,7 @@ typedef float float32_t;
 #define QSO_STATE_CQ_REPORT 2 
 #define QSO_STATE_CQ_RRR 4
 
-//when search & pounding
+//when search & pouncing
 #define QSO_STATE_REPLY_GRID 1
 #define QSO_STATE_REPLY_REPORT 3
 
@@ -89,6 +87,7 @@ void b64_decode(char *b64src, char *clrdst) {
 
   clrdst[0] = '\0';
   phase = 0; i=0;
+  memset(in, 0, sizeof(in));
   while(b64src[i]) {
     c = (int) b64src[i];
     if(c == '=') {
@@ -145,35 +144,25 @@ void b64_encode(char *clrstr, char *b64dst) {
 /*******************************************************
 **********           FLDIGI xml                  *******
 ********************************************************/
-/*
-An almost trivial xml, just enough to work fldigi
-*/
+
+// An almost trivial xml, just enough to work fldigi
 
 char fldigi_mode[100];
 long fldigi_retry_at = 0;
-/*
-An almost trivial xml, just enough to work fldigi
-*/
 
 int fldigi_call_i(char *action, int param, char *result){
-  char buffer[10000], q[10000], xml[1000];
+  char q[10000], xml[1000];
   struct sockaddr_in serverAddr;
-  struct sockaddr_storage serverStorage;
-  socklen_t addr_size;
-	struct timeval timeout;
+  struct sockaddr_storage;
 
   serverAddr.sin_family = AF_INET;
   serverAddr.sin_port = htons(7362);
   serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
   memset(serverAddr.sin_zero, '\0', sizeof serverAddr.sin_zero);  
 	
-	int fldigi_socket = socket(AF_INET, SOCK_STREAM, 0);
-/*	timeout.tv_sec = 0;
-	timeout.tv_usec = 1000;
-	setsockopt(fldigi_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
-	setsockopt(fldigi_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
-*/
-	*result = 0; //start with a null string so it is returned if nothing is read
+  int fldigi_socket = socket(AF_INET, SOCK_STREAM, 0);
+
+  *result = 0; //start with a null string so it is returned if nothing is read
 
   if (connect(fldigi_socket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
 		//puts("unable to connect to the flidigi\n");        
@@ -232,11 +221,10 @@ int fldigi_call_i(char *action, int param, char *result){
 }
 
 int fldigi_call(char *action, char *param, char *result){
-  char buffer[10000], q[10000], xml[1000];
+  char q[10000], xml[1000];
   struct sockaddr_in serverAddr;
-  struct sockaddr_storage serverStorage;
-  socklen_t addr_size;
-	struct timeval timeout;
+  struct sockaddr_storage;
+  struct timeval timeout;
 
   serverAddr.sin_family = AF_INET;
   serverAddr.sin_port = htons(7362);
@@ -376,7 +364,12 @@ static int fldigi_tx_stop(){
 }
 
 void modem_set_pitch(int pitch, int mode){
-	
+
+	// keep the CW TX oscillator's cached pitch current the instant PITCH
+	// changes
+	if (mode == MODE_CW || mode == MODE_CWR)
+		cw_set_pitch(pitch);
+
 	//Sends an xmlrpc command to fldigi, so be selective of which modes we actually use it on - n1qm
 	switch (mode) {
 		case MODE_CW:
@@ -394,14 +387,14 @@ void modem_set_pitch(int pitch, int mode){
 
 int last_pitch = 0;
 void modem_rx(int mode, int32_t *samples, int count){
-	int i, j, k, l;
 	int32_t *s;
-	FILE *pf;
 	char buff[10000];
 
 	if (get_pitch() != last_pitch  
-		&& (mode == MODE_CW || mode == MODE_CWR || mode == MODE_RTTY || mode == MODE_PSK31))
+		&& (mode == MODE_CW || mode == MODE_CWR || mode == MODE_RTTY || mode == MODE_PSK31)) {
 		modem_set_pitch(get_pitch(),mode);
+		last_pitch = get_pitch();
+	}
 
 	s = samples;
 	switch(mode){

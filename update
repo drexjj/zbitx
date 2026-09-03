@@ -11,10 +11,8 @@ git remote set-url origin https://github.com/drexjj/zbitx.git
 git pull
 git checkout main
 cd $HOME/sbitx/src/ft8_lib
+make clean
 make
-sudo make install
-cd $HOME/sbitx
-./build sbitx
 echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
 
 echo "zbitx has been installed successfully. You can now close this window."
