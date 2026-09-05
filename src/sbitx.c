@@ -83,7 +83,7 @@ fftw_complex *fft_out; // holds the incoming samples in freq domain (for rx as w
 fftw_complex *fft_in;  // holds the incoming samples in time domain (for rx as well as tx)
 fftw_complex *fft_m;   // holds previous samples for overlap and discard convolution
 fftw_plan plan_fwd, plan_tx;
-int bfo_freq = 40035000;
+int bfo_freq = 40048000;
 int bfo_freq_runtime_offset = 0; // Runtime bfo offset
 int freq_hdr = -1;
 
