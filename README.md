@@ -11,7 +11,6 @@ We have an incredible development team collaborating on improvements for the sBi
 
 - **JJ - W9JES**
 - **Mike - KB2ML**
-- **Juan - WP3DN**
 
 A huge thank you to everyone who contributed their time and expertise to this project including our early release testers!
 - **Viric**
