@@ -41,6 +41,7 @@ The initial sync between the gui values, the core radio values, settings, et al 
 #include "ini.h"
 #include "hamlib.h"
 #include "remote.h"
+#include "wifi_panel.h"
 #include "modem_ft8.h"
 #include "i2cbb.h"
 #include "webserver.h"
@@ -6981,6 +6982,12 @@ void zbitx_poll(int all){
 	zbitx_poll_done:
 	last_update = this_time;
 
+	/* Push any pending Wi-Fi status/scan results the background worker has
+	 * produced. This is a main-thread-only I2C write, same as everything else
+	 * in this function, so it can't collide with the bit-banged bus. It's a
+	 * no-op when there's nothing pending. */
+	wifi_panel_poll();
+
 	/*  this block printed zbitx_poll() timing data during debug
 	clock_gettime(CLOCK_MONOTONIC, &_zp_t1);
 	long _zp_us = (_zp_t1.tv_sec - _zp_t0.tv_sec) * 1000000L
@@ -8463,6 +8470,16 @@ void cmd_exec(char *cmd)
 	{
 		set_field("#vswr", args);
 	}
+	// Front-panel Wi-Fi (station mode) management. The panel sends:
+	//   "WIFI scan" / "WIFI status" / "WIFI disconnect"
+	//   "WIFI connect <ssid>\t<psk>"  (TAB-separated; psk empty = open net)
+	//   "WIFI forget <ssid>"
+	// All the nmcli work is threaded inside wifi_panel_command(); results are
+	// pushed back to the panel from wifi_panel_poll() on the main thread.
+	else if (!strcmp(exec, "WIFI") || !strcmp(exec, "wifi"))
+	{
+		wifi_panel_command(args);
+	}
 	//'Band scale' setting to adjust scale for easier adjustment for tuning power output - n1qm
 	else if (!strcmp(exec, "bs"))
 	{
@@ -8780,6 +8797,7 @@ int main(int argc, char *argv[])
 	// hamlib_start();
 	initialize_hamlib();
 	remote_start();
+	wifi_panel_init();
 	rtc_read();
 
 	// zbitx
