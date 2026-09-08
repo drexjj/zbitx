@@ -959,7 +959,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
               }
               
               // Double check with the PID file
-              app_fp = popen("[ -f /tmp/main_x11vnc.pid ] && kill -0 $(cat /tmp/main_x11vnc.pid) 2>/dev/null && echo 1 || echo 0", "r");
+              app_fp = popen("[ -f /tmp/main_vnc_x11vnc.pid ] && kill -0 $(cat /tmp/main_vnc_x11vnc.pid) 2>/dev/null && echo 1 || echo 0", "r");
               if (app_fp != NULL) {
                 char result[10];
                 if (fgets(result, sizeof(result), app_fp) != NULL) {

@@ -3,6 +3,7 @@
 APP_NAME="main_vnc"
 
 # Define the VNC and WebSocket ports for this application
+# These MUST match start_main_vnc.sh so the correct NoVNC proxy is stopped.
 VNC_PORT=5900
 WS_PORT=6080
 DISPLAY_NUM=0
