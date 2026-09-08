@@ -8226,6 +8226,53 @@ void cmd_exec(char *cmd)
 	{
 		set_field("#vswr", args);
 	}
+	// USB mode control: toggles (or sets) the USB port between CAT and
+	// Mouse/Keyboard mode by running /home/pi/usb-mode. The panel sends:
+	//   "USB toggle" -> read --status, switch to the other mode
+	//   "USB cat"    -> force CAT mode
+	//   "USB mouse"  -> force Mouse/Keyboard mode
+	// After switching we push {USB <MODE>} back so the panel button shows the
+	// current state. usb-mode exits immediately, so running it inline is fine.
+	else if (!strcmp(exec, "USB") || !strcmp(exec, "usb"))
+	{
+		char mode_line[128] = "";
+		int is_cat = 0;      // 1 = currently CAT, 0 = currently mouse/unknown
+
+		// Read the current mode.
+		FILE *pf = popen("/home/pi/usb-mode --status 2>/dev/null", "r");
+		if (pf)
+		{
+			if (fgets(mode_line, sizeof(mode_line), pf))
+			{
+				// Tolerant parse: look for "cat" vs "mouse" anywhere, any case.
+				for (char *p = mode_line; *p; p++)
+					*p = tolower((unsigned char)*p);
+				if (strstr(mode_line, "cat"))
+					is_cat = 1;
+			}
+			pclose(pf);
+		}
+
+		// Decide the target mode.
+		int want_cat;
+		if (!strncmp(args, "cat", 3))
+			want_cat = 1;
+		else if (!strncmp(args, "mouse", 5))
+			want_cat = 0;
+		else // "toggle" or anything else: flip current
+			want_cat = !is_cat;
+
+		// Apply it.
+		if (want_cat)
+			system("/home/pi/usb-mode --cat >/dev/null 2>&1");
+		else
+			system("/home/pi/usb-mode --mouse >/dev/null 2>&1");
+
+		// Push the new mode to the panel's USB button value.
+		char buff[64];
+		sprintf(buff, "USB %s}", want_cat ? "CAT" : "MOUSE");
+		i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(buff), buff);
+	}
 	//'Band scale' setting to adjust scale for easier adjustment for tuning power output - n1qm
 	else if (!strcmp(exec, "bs"))
 	{
