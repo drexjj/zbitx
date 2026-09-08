@@ -41,7 +41,6 @@ The initial sync between the gui values, the core radio values, settings, et al 
 #include "ini.h"
 #include "hamlib.h"
 #include "remote.h"
-#include "wifi_panel.h"
 #include "modem_ft8.h"
 #include "i2cbb.h"
 #include "webserver.h"
@@ -1165,6 +1164,16 @@ int set_field(const char *id, const char *value)
 	char buff[200];
 	sprintf(buff, "%s %s", f->label, f->value);
 	do_control_action(buff);
+
+	// Mark the settings dirty so save_user_settings() will write them out.
+	// In the GTK windowed build, value changes come through edit_field()/
+	// do_tuning(), which both set settings_updated after their do_control_action
+	// call. In headless mode those GTK edit paths never run — front-panel,
+	// web and CAT changes all funnel through set_field() instead — so without
+	// this the frequency/band/mode/power/IF changes were applied live but never
+	// persisted to user_settings.ini. Flagging here makes both builds behave
+	// identically. (The 30s throttle in save_user_settings prevents any churn.)
+	settings_updated++;
 
 	update_field(f);
 	return 0;
@@ -6982,12 +6991,6 @@ void zbitx_poll(int all){
 	zbitx_poll_done:
 	last_update = this_time;
 
-	/* Push any pending Wi-Fi status/scan results the background worker has
-	 * produced. This is a main-thread-only I2C write, same as everything else
-	 * in this function, so it can't collide with the bit-banged bus. It's a
-	 * no-op when there's nothing pending. */
-	wifi_panel_poll();
-
 	/*  this block printed zbitx_poll() timing data during debug
 	clock_gettime(CLOCK_MONOTONIC, &_zp_t1);
 	long _zp_us = (_zp_t1.tv_sec - _zp_t0.tv_sec) * 1000000L
@@ -8470,63 +8473,6 @@ void cmd_exec(char *cmd)
 	{
 		set_field("#vswr", args);
 	}
-	// Front-panel Wi-Fi (station mode) management. The panel sends:
-	//   "WIFI scan" / "WIFI status" / "WIFI disconnect"
-	//   "WIFI connect <ssid>\t<psk>"  (TAB-separated; psk empty = open net)
-	//   "WIFI forget <ssid>"
-	// All the nmcli work is threaded inside wifi_panel_command(); results are
-	// pushed back to the panel from wifi_panel_poll() on the main thread.
-	else if (!strcmp(exec, "WIFI") || !strcmp(exec, "wifi"))
-	{
-		wifi_panel_command(args);
-	}
-	// USB mode control: toggles (or sets) the USB port between CAT and
-	// Mouse/Keyboard mode by running /home/pi/usb-mode. The panel sends:
-	//   "USB toggle" -> read --status, switch to the other mode
-	//   "USB cat"    -> force CAT mode
-	//   "USB mouse"  -> force Mouse/Keyboard mode
-	// After switching we push {USB <MODE>} back so the panel button shows the
-	// current state. usb-mode exits immediately, so running it inline is fine.
-	else if (!strcmp(exec, "USB") || !strcmp(exec, "usb"))
-	{
-		char mode_line[128] = "";
-		int is_cat = 0;      // 1 = currently CAT, 0 = currently mouse/unknown
-
-		// Read the current mode.
-		FILE *pf = popen("/home/pi/usb-mode --status 2>/dev/null", "r");
-		if (pf)
-		{
-			if (fgets(mode_line, sizeof(mode_line), pf))
-			{
-				// Tolerant parse: look for "cat" vs "mouse" anywhere, any case.
-				for (char *p = mode_line; *p; p++)
-					*p = tolower((unsigned char)*p);
-				if (strstr(mode_line, "cat"))
-					is_cat = 1;
-			}
-			pclose(pf);
-		}
-
-		// Decide the target mode.
-		int want_cat;
-		if (!strncmp(args, "cat", 3))
-			want_cat = 1;
-		else if (!strncmp(args, "mouse", 5))
-			want_cat = 0;
-		else // "toggle" or anything else: flip current
-			want_cat = !is_cat;
-
-		// Apply it.
-		if (want_cat)
-			system("/home/pi/usb-mode --cat >/dev/null 2>&1");
-		else
-			system("/home/pi/usb-mode --mouse >/dev/null 2>&1");
-
-		// Push the new mode to the panel's USB button value.
-		char buff[64];
-		sprintf(buff, "USB %s}", want_cat ? "CAT" : "MOUSE");
-		i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(buff), buff);
-	}
 	//'Band scale' setting to adjust scale for easier adjustment for tuning power output - n1qm
 	else if (!strcmp(exec, "bs"))
 	{
@@ -8844,7 +8790,6 @@ int main(int argc, char *argv[])
 	// hamlib_start();
 	initialize_hamlib();
 	remote_start();
-	wifi_panel_init();
 	rtc_read();
 
 	// zbitx
