@@ -11,17 +11,6 @@ We have an incredible development team collaborating on improvements for the sBi
 
 - **JJ - W9JES**
 - **Mike - KB2ML**
-- **Juan - WP3DN**
-
-A huge thank you to everyone who contributed their time and expertise to this project including our early release testers!
-- **Viric**
-- **Farhan - VU2ESE**
-- **Juan - WP3DN**
-- **Mike - KB2ML**
-- **Evan - AC9TU**
-- **Bob - KD8CGH**
-- **Andy - KC1WCH**
-- **Ed - KV1P**
 
 
 ## 📂 File Compatibility
@@ -70,9 +59,14 @@ A preconfigured, downloadable Raspberry Pi Zero 2W image file will be available 
 
 ## 👏 Contributors & Credits
 
-A huge thank you to the contributors who have played a vital role in this project! including Farhan, VU2ESE for creating the initial project.
-
-
+A huge thank you to the contributors who have played a vital role in this project with testing, development, feedback, etc! Thank you to Farhan, VU2ESE and the HF Signals team for creating and distributing the project.
+- **Viric**
+- **Juan - WP3DN**
+- **Mike - KB2ML**
+- **Evan - AC9TU**
+- **Bob - KD8CGH**
+- **Andy - KC1WCH**
+- **Ed - KV1P**
 
 ## 🌟 Support the Project
 

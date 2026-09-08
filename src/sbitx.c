@@ -26,7 +26,6 @@
 #define DEBUG 0
 
 int bandtweak = 4;		// Band power array index the \bs command will target -n1qm
-int ext_ptt_enable = 0; // ADDED BY KF7YDU.
 char audio_card[32];
 static int tx_shift = 600;  // old default was 512
 parametriceq tx_eq;
@@ -2458,11 +2457,6 @@ void tr_switch_v4(int tx_on) {
     mute_count = 1;             // number of audio samples to zero out
 	fft_reset_m_bins();          // fixes burst at start of transmission
     set_tx_power_levels();       // use values for tx_power_watts, tx_gain
-    //ADDED BY KF7YDU - Check if ptt is enabled, if so, set ptt pin to high
-			if (ext_ptt_enable == 1) {
-				digitalWrite(EXT_PTT, HIGH);
-				delay(20); //this delay gives time for ext device to settle before tx
-			}
 		prev_lpf = -1;               // force LPF to be re-selected
 		set_lpf_40mhz(freq_hdr);     // engage the correct LPF for the current band
 		delay(10);                   // debounce: let LPF relay settle before keying PA
@@ -2487,7 +2481,6 @@ void tr_switch_v4(int tx_on) {
 	 	digitalWrite(LPF_D, LOW);
 	 	digitalWrite(LPF_E, LOW);
 		prev_lpf = -1;               // force LPF to be re-selected on next RX tune
-    digitalWrite(EXT_PTT, LOW);  // added by KF7YDU - shuts down ext_ptt
     delay(5);
     check_r1_volume();           // audio codec is back on
     initialize_rx_vol();         // added to set volume after tx -W2JON W9JES KB2ML
@@ -2523,11 +2516,6 @@ void tr_switch_v2(int tx_on) {
     mute_count = 1;             // number of audio samples to zero out
 	fft_reset_m_bins();          // fixes burst at start of transmission
     set_tx_power_levels();       // use values for tx_power_watts, tx_gain
-    //ADDED BY KF7YDU - Check if ptt is enabled, if so, set ptt pin to high
-			if (ext_ptt_enable == 1) {
-				digitalWrite(EXT_PTT, HIGH);
-				delay(20); //this delay gives time for ext device to settle before tx
-			}
 	prev_lpf = -1;               // force LPF to be re-selected
 	set_lpf_40mhz(freq_hdr);     // engage the correct LPF for the current band
 	delay(10);                   // debounce: let LPF relay settle before keying PA
@@ -2551,7 +2539,6 @@ void tr_switch_v2(int tx_on) {
 	digitalWrite(LPF_C, LOW);
 	digitalWrite(LPF_D, LOW);
 	prev_lpf = -1;               // force LPF to be re-selected
-    digitalWrite(EXT_PTT, LOW);  // added by KF7YDU - shuts down ext_ptt
     delay(5);
     digitalWrite(TX_LINE, LOW);  // use T/R switch to connect rcvr
     //digitalWrite(RX_LINE, HIGH);
@@ -2597,7 +2584,6 @@ void setup()
 	pinMode(TX_LINE, OUTPUT);
 	pinMode(TX_POWER, OUTPUT);
 	pinMode(RX_LINE, OUTPUT);
-	pinMode(EXT_PTT, OUTPUT); // ADDED BY KF7YDU
 	pinMode(LPF_A, OUTPUT);
 	pinMode(LPF_B, OUTPUT);
 	pinMode(LPF_C, OUTPUT);
@@ -2609,8 +2595,6 @@ void setup()
 	digitalWrite(LPF_D, LOW);
 	digitalWrite(LPF_E, LOW);
 
-	// ADDED BY KF7YDU - initialize ext_ptt to low at startup
-	digitalWrite(EXT_PTT, LOW);
 
 	digitalWrite(TX_LINE, LOW);
 	digitalWrite(TX_POWER, LOW);

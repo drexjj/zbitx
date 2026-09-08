@@ -1,3 +1,10 @@
+# v5.07
+- Added wifi control option to scan/connect/disconnect to wifi networks
+- Added USB mode control  option to set the mode of the USB port between CAT control or Keybaord/Mouse control
+- Changed the Apps button function to VNC so it launches the web VNC display option directly
+- Multiple tweaks and bugfixes.
+- Requires front panel firmare v5.07f
+
 # v5.05
 - First public release. Multiple fixes and changes to improve cw, interfaces, etc. Requires panel firmware v5.05z
 

@@ -18,7 +18,7 @@ COMMON_SRC := \
 	src/i2c.c src/si5351v2.c src/ini.c src/hamlib.c src/queue.c src/modems.c src/logbook.c \
 	src/modem_cw.c src/settings_ui.c src/hist_disp.c src/ntputil.c \
 	src/telnet.c src/macros.c src/modem_ft8.c src/remote.c src/mongoose.c src/para_eq.c \
-	src/webserver.c src/eq_ui.c
+	src/webserver.c src/eq_ui.c src/wifi_panel.c
 
 FT8_LIB := src/ft8_lib/libft8.a
 
