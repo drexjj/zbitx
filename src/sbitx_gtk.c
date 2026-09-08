@@ -15,6 +15,7 @@ The initial sync between the gui values, the core radio values, settings, et al 
 #include <sys/types.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <ncurses.h>
@@ -65,7 +66,6 @@ struct Queue q_zbitx_console;  //zbitx
 struct Queue q_tx_text;
 int eq_is_enabled = 0;
 int rx_eq_is_enabled = 0;
-int eptt_enabled = 0;
 int comp_enabled = 0;
 int input_volume = 0;
 int vfo_lock_enabled = 0;
@@ -575,10 +575,10 @@ int do_comp_edit(struct field *f, cairo_t *gfx, int event, int a, int b, int c);
 int do_txmon_edit(struct field *f, cairo_t *gfx, int event, int a, int b, int c);
 int do_wf_edit(struct field *f, cairo_t *gfx, int event, int a, int b, int c);
 int do_dsp_edit(struct field *f, cairo_t *gfx, int event, int a, int b, int c);
-int do_vfo_keypad(struct field *f, cairo_t *gfx, int event, int a, int b, int c);
 int do_bfo_offset(struct field *f, cairo_t *gfx, int event, int a, int b, int c);
 int do_zero_beat_sense_edit(struct field *f, cairo_t *gfx, int event, int a, int b, int c);
 void cleanup_on_exit(void);
+static void term_handler(int signum);
 
 struct field *active_layout = NULL;
 char settings_updated = 0;
@@ -632,8 +632,6 @@ struct field main_controls[] = {
 	 "", 0, 100, 5, COMMON_CONTROL},
 	{"r1:freq", do_tuning, 600, 0, 150, 49, "FREQ", 5, "14000000", FIELD_NUMBER, FONT_LARGE_VALUE,
 	 "", 500000, 32000000, 100, COMMON_CONTROL},
-	{"#vfo_keypad_overlay", do_vfo_keypad, 600, 0, 75, 49, "", 0, "", FIELD_STATIC, FONT_FIELD_VALUE,
-	 "", 0, 0, 0, COMMON_CONTROL},
 	{"r1:volume", NULL, 755, 5, 40, 40, "AUDIO", 40, "60", FIELD_NUMBER, FONT_FIELD_VALUE,
 	 "", 0, 100, 1, COMMON_CONTROL},
 	{"#step", NULL, 560, 5, 40, 40, "STEP", 1, "10Hz", FIELD_SELECTION, FONT_FIELD_VALUE,
@@ -797,8 +795,6 @@ struct field main_controls[] = {
 	 "", 0, 0, 0, 0, COMMON_CONTROL}, // w9jes
 	{"#poff", NULL, 1000, -1000, 40, 40, "PWR-DWN", 1, "", FIELD_BUTTON, FONT_FIELD_VALUE,
 	 "", 0, 0, 0, 0, COMMON_CONTROL},
-	 {"#wf_call", NULL, 1000, -1000, 40, 40, "WFCALL", 1, "", FIELD_BUTTON, FONT_FIELD_VALUE,
-		"", 0, 0, 0, 0, COMMON_CONTROL}, 
 
 	// EQ TX Audio Setting Controls
 	{"#eq_sliders", do_toggle_option, 1000, -1000, 40, 40, "EQSET", 40, "", FIELD_BUTTON, FONT_FIELD_VALUE,
@@ -850,17 +846,6 @@ struct field main_controls[] = {
 
 	// S-Meter Option ON/OFF (hides/reveals s-meter)
 	{"#smeter_option", do_toggle_option, 1000, -1000, 40, 40, "SMETEROPT", 40, "OFF", FIELD_TOGGLE, FONT_FIELD_VALUE,
-	 "ON/OFF", 0, 0, 0, 0},
-
-	// ePTT option ON/OFF (hides/reveals menu button)
-	{"#eptt_option", do_toggle_option, 1000, -1000, 40, 40, "EPTTOPT", 40, "OFF", FIELD_TOGGLE, FONT_FIELD_VALUE,
-	 "ON/OFF", 0, 0, 0, 0},
-	// ePTT Enable/Bypass Control
-	{"#eptt", do_toggle_option, 1000, -1000, 40, 40, "ePTT", 40, "OFF", FIELD_TOGGLE, FONT_FIELD_VALUE,
-	 "ON/OFF", 0, 0, 0, 0},
-
-	// WFCALL option ON/OFF
-	{"#wfcall_option", do_toggle_option, 1000, -1000, 40, 40, "WFCALLOPT", 40, "OFF", FIELD_TOGGLE, FONT_FIELD_VALUE,
 	 "ON/OFF", 0, 0, 0, 0},
 
 	// Sub Menu Control 473,50 <- was
@@ -1712,19 +1697,42 @@ void save_user_settings(int forced)
 	static int last_save_at = 0;
 	char file_path[200]; // dangerous, find the MAX_PATH and replace 200 with it
 
-	// attempt to save settings only if it has been 30 seconds since the
-	// last time the settings were saved
+	// attempt to save settings only if it has been a few seconds since the
+	// last time the settings were saved. This was 30s, which meant a kill
+	// (SIGKILL/SIGTERM, which bypass the shutdown save) could lose up to 30s of
+	// changes. 5s keeps the file current with minimal SD-card wear, since a
+	// write still only happens when settings_updated is set.
 	int now = millis();
-	if ((now < last_save_at + 30000 || !settings_updated) && forced == 0)
+	if ((now < last_save_at + 5000 || !settings_updated) && forced == 0)
 		return;
 
 	char *path = getenv("HOME");
 	strcpy(file_path, path);
 	strcat(file_path, "/sbitx/data/user_settings.ini");
 
-	// copy the current freq settings to the currently selected vfo
+	// copy the current freq settings to the currently selected vfo.
+	// On startup, main() restores r1:freq FROM #vfo_a_freq, so if we don't
+	// mirror the live frequency into the active VFO field here, the saved
+	// #vfo_a_freq stays stale and the radio comes up on the wrong frequency.
+	// (The comment below always promised this copy, but the code was missing,
+	// so tuning without ever pressing VFO A/B was never persisted.)
 	struct field *f_freq = get_field("r1:freq");
 	struct field *f_vfo = get_field("#vfo");
+	if (f_freq && f_vfo)
+	{
+		if (!strcmp(f_vfo->value, "B"))
+		{
+			struct field *f_vfo_b = get_field("#vfo_b_freq");
+			if (f_vfo_b)
+				strcpy(f_vfo_b->value, f_freq->value);
+		}
+		else
+		{
+			struct field *f_vfo_a = get_field("#vfo_a_freq");
+			if (f_vfo_a)
+				strcpy(f_vfo_a->value, f_freq->value);
+		}
+	}
 
 	FILE *f = fopen(file_path, "w");
 	if (!f)
@@ -1977,169 +1985,6 @@ static void on_power_down_button_click(GtkWidget *widget, gpointer data)
 }
 
 
-// Transmit Callsign in Waterfall
-extern struct field *get_field(const char *name);
-
-// Struct to pass data to the thread
-typedef struct {
-    GtkWidget *dialog;
-    char text[32];
-    char wf_min[32];
-    char wf_max[32];
-    char wf_spd[32];
-    gboolean restore_settings;
-} TransmitData;
-
-// Thread function to run the command and close the dialog
-
-//
-// Idle callback to destroy the dialog safely
-static gboolean destroy_dialog_idle(gpointer user_data)
-{
-    GtkWidget *dialog = GTK_WIDGET(user_data);
-    
-    // Unref and destroy the dialog
-    gtk_widget_destroy(dialog);
-    g_object_unref(dialog);
-    
-    // Return FALSE to remove this callback from the idle queue
-    return FALSE;
-}
-
-// Function to restore waterfall settings and destroy dialog
-gboolean restore_waterfall_settings(gpointer user_data)
-{
-    TransmitData *tdata = (TransmitData *)user_data;
-    
-    // Restore original waterfall settings
-    set_field("#wf_min", tdata->wf_min);
-    set_field("#wf_max", tdata->wf_max);
-    set_field("#wf_spd", tdata->wf_spd);
-    
-    // Destroy the dialog
-    gtk_widget_destroy(tdata->dialog);
-    g_object_unref(tdata->dialog);
-    
-    // Free the data structure
-    g_free(tdata);
-    
-    // Return FALSE to remove this callback from the idle queue
-    return FALSE;
-}
-
-static gpointer transmit_callsign_thread(gpointer user_data)
-{
-    TransmitData *tdata = (TransmitData *)user_data;
-
-    // Arguments for the system command
-    gchar *argv[] = {
-        "python3",
-        "/home/pi/spectrum_painting/spectrogram-generator.py",
-        "--text",
-        NULL,  // This will be set later
-        "--transmit",
-        NULL
-    };
-
-    argv[3] = g_strdup(tdata->text);  // Set the callsign
-
-    gint exit_status = 0;
-    GError *error = NULL;
-    gboolean success = g_spawn_sync(
-        NULL,            // Working directory
-        argv,            // Argument vector
-        NULL,            // Environment
-        G_SPAWN_SEARCH_PATH,
-        NULL,            // Child setup function
-        NULL,            // User data
-        NULL,            // Stdout
-        NULL,            // Stderr
-        &exit_status,
-        &error
-    );
-
-    if (!success) {
-        g_warning("Failed to run command: %s", error->message);
-        g_error_free(error);
-    }
-
-    g_free(argv[3]);
-    
-    // Restore original waterfall settings if needed
-    if (tdata->restore_settings) {
-        // We need to use g_idle_add to ensure UI updates happen on the main thread
-        g_idle_add_full(G_PRIORITY_HIGH_IDLE, (GSourceFunc)restore_waterfall_settings, tdata, NULL);
-    } else {
-        // Safely destroy the dialog from the main thread
-        g_idle_add(destroy_dialog_idle, tdata->dialog);
-        g_free(tdata);
-    }
-    
-    return NULL;
-}
-
-static void on_wf_call_button_click(GtkWidget *widget, gpointer data)
-{
-    // Get the callsign
-    const char *callsign = get_field("#mycallsign")->value;
-    if (!callsign || strlen(callsign) == 0)
-        callsign = "N0CALL";
-
-    // Save original waterfall settings
-    struct field *f_min = get_field("#wf_min");
-    struct field *f_max = get_field("#wf_max");
-    struct field *f_spd = get_field("#wf_spd");
-    
-    char original_wf_min[32], original_wf_max[32], original_wf_spd[32];
-    
-    // Store original values
-    if (f_min && f_max && f_spd) {
-        strncpy(original_wf_min, f_min->value, sizeof(original_wf_min));
-        strncpy(original_wf_max, f_max->value, sizeof(original_wf_max));
-        strncpy(original_wf_spd, f_spd->value, sizeof(original_wf_spd));
-        
-        // Set new values for waterfall display
-        set_field("#wf_min", "145");
-        set_field("#wf_max", "180");
-        set_field("#wf_spd", "80");
-    }
-
-    // Create a top-level, undecorated window
-    GtkWidget *dialog = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_decorated(GTK_WINDOW(dialog), FALSE);  
-    gtk_window_set_resizable(GTK_WINDOW(dialog), FALSE);
-    gtk_window_set_modal(GTK_WINDOW(dialog), TRUE);
-    gtk_window_set_position(GTK_WINDOW(dialog), GTK_WIN_POS_CENTER);
-
-    // Create the content for the dialog
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    GtkWidget *label = gtk_label_new("Transmitting Callsign in Waterfall");
-    gtk_container_add(GTK_CONTAINER(box), label);
-    gtk_container_add(GTK_CONTAINER(dialog), box);
-
-    gtk_widget_show_all(dialog);
-
-    // Ref the dialog to ensure it's valid when we destroy it later
-    g_object_ref(dialog);
-
-    // Prepare data for thread
-    TransmitData *tdata = g_malloc(sizeof(TransmitData));
-    tdata->dialog = dialog;
-    snprintf(tdata->text, sizeof(tdata->text), "%s", callsign);
-    
-    // Store original waterfall settings in the transmit data
-    if (f_min && f_max && f_spd) {
-        strncpy(tdata->wf_min, original_wf_min, sizeof(tdata->wf_min));
-        strncpy(tdata->wf_max, original_wf_max, sizeof(tdata->wf_max));
-        strncpy(tdata->wf_spd, original_wf_spd, sizeof(tdata->wf_spd));
-        tdata->restore_settings = TRUE;
-    } else {
-        tdata->restore_settings = FALSE;
-    }
-
-    // Run the command in a separate thread
-    g_thread_new("transmit_thread", transmit_callsign_thread, tdata);
-}
 
 
 /* rendering of the fields */
@@ -2793,30 +2638,6 @@ void draw_spectrum(struct field *f_spectrum, cairo_t *gfx)
 	}
 
 	// display active plugins
-	//  --- ePTT plugin indicator W2JON
-	const char *eptt_text = "ePTT";
-	cairo_set_font_size(gfx, FONT_SMALL);
-
-	// Check the eptt_enabled variable and set the text color
-	if (eptt_enabled)
-	{
-		cairo_set_source_rgb(gfx, 1.0, 0.0, 0.0); // Green when enabled
-	}
-	else
-	{
-		cairo_set_source_rgb(gfx, 0.2, 0.2, 0.2); // Gray when disabled
-	}
-
-	// Cast eptt_text to char* to avoid the warning
-
-	int eptt_text_x = f_spectrum->x + f_spectrum->width - measure_text(gfx, (char *)eptt_text, FONT_SMALL) - 188;
-	int eptt_text_y = f_spectrum->y + 7;
-	if (!strcmp(field_str("EPTTOPT"), "ON"))
-	{
-		cairo_move_to(gfx, eptt_text_x, eptt_text_y);
-		cairo_show_text(gfx, eptt_text);
-	}
-
 	// --- Compressor plugin indicator W2JON
 	const char *comp_text = "COMP";
 	cairo_set_font_size(gfx, FONT_SMALL);
@@ -3555,10 +3376,6 @@ void menu_display(int show)
 				field_move("COMP", 350, screen_height - 100, 45, 45);
 				field_move("TXMON", 400, screen_height - 100, 45, 45);
 				field_move("TNDUR", 500, screen_height - 100, 45, 45);
-				if (!strcmp(field_str("EPTTOPT"), "ON"))
-				{
-					field_move("ePTT", screen_width - 94, screen_height - 100, 92, 45);
-				}
 
 				// Line 2 (screen_height - 90)
 				field_move("WEB", 5, screen_height - 50, 45, 45);
@@ -3622,16 +3439,6 @@ void menu2_display(int show)
 		field_move("INTENSITY", 245, screen_height - 50, 70, 45); // Add SCOPE ALPHA field
 		field_move("AUTOSCOPE", 320, screen_height - 50, 70, 45); // Add AUTOADJUST spectrum field
 		field_move("PWR-DWN", screen_width - 94, screen_height - 100, 92, 45); // Add PWR-DWN field
-		// Only show WFCALL if option is ON and mode is not FT8, CW, or CWR
-		const char *current_mode = field_str("MODE");
-		if (!strcmp(field_str("WFCALLOPT"), "ON") && 
-		    strcmp(current_mode, "FT8") != 0 && 
-		    strcmp(current_mode, "CW") != 0 && 
-		    strcmp(current_mode, "CWR") != 0)
-		{
-			field_move("WFCALL", screen_width - 94, screen_height - 155, 92, 45); // Add WFCALL
-		}
-		
 
 	}
 	else
@@ -4909,35 +4716,6 @@ int do_toggle_option(struct field *f, cairo_t *gfx, int event, int a, int b, int
 	return 0;
 }
 
-// Function to launch freq-direct.py keypad when VFO area is touched
-int do_vfo_keypad(struct field *f, cairo_t *gfx, int event, int a, int b, int c)
-{
-	if (event == FIELD_DRAW)
-	{
-		// Don't draw anything - make it completely transparent
-		// This ensures the VFO display remains visible
-		return 1; // Return 1 to indicate we've handled the drawing
-	}
-	else if (event == GDK_BUTTON_PRESS || event == FIELD_EDIT)
-	{
-		// Use the focus_keypad.sh script to either focus the existing keypad
-		// or launch a new one if it's not running
-		system("/home/pi/sbitx/src/focus_keypad.sh &");
-		
-		// Force a redraw of the VFO area to prevent black background
-		invalidate_rect(f->x, f->y, f->width, f->height);
-		
-		// Also redraw the r1:freq field which is underneath
-		struct field *freq_field = get_field("r1:freq");
-		if (freq_field) {
-			invalidate_rect(freq_field->x, freq_field->y, freq_field->width, freq_field->height);
-		}
-		
-		return 1;
-	}
-	return 0;
-}
-
 void open_url(char *url)
 {
 	char temp_line[200];
@@ -5489,19 +5267,13 @@ void tx_on(int trigger)
 		return;
 	}
 
-	// ePTT Enable/Disable W2JON
-	struct field *eptt = get_field("#eptt");
-	if (eptt)
-	{
-		if (!strcmp(eptt->value, "ON"))
-		{
-			ext_ptt_enable = 1;
-		}
-		else if (!strcmp(eptt->value, "OFF"))
-		{
-			ext_ptt_enable = 0;
-		}
-	}
+	// Persist settings at every transmit. Keying up is a natural checkpoint:
+	// the operator has settled on frequency/band/mode/power, and a forced save
+	// here guarantees those are written to user_settings.ini even if the app is
+	// later killed (SIGKILL/SIGTERM bypass the normal shutdown save). forced=1
+	// ignores the periodic throttle, and save_user_settings() only actually
+	// writes when something changed, so this is cheap on repeated keying.
+	save_user_settings(1);
 
 	struct field *f = get_field("r1:mode");
 	if (f)
@@ -5535,7 +5307,6 @@ void tx_on(int trigger)
 		set_operating_freq(atoi(freq->value), response);
 		update_field(get_field("r1:freq"));
 		// printf("TX\n");
-		//	printf("ext_ptt_enable value: %d\n", ext_ptt_enable); //Added to debug the switch. W2JON
 		//	printf("eq_enable value: %d\n", eq_is_enabled); //Added to debug the switch. W2JON
 	}
 
@@ -5550,7 +5321,6 @@ gboolean check_plugin_controls(gpointer data)
 	struct field *notch_stat = get_field("#notch_plugin");
 	struct field *dsp_stat = get_field("#dsp_plugin");
 	struct field *anr_stat = get_field("#anr_plugin");
-	struct field *eptt_stat = get_field("#eptt");
 	struct field *vfo_stat = get_field("#vfo_lock");
 	struct field *comp_stat = get_field("#comp_plugin");
 	struct field *zero_beat_stat = get_field("#zero_beat");
@@ -5638,18 +5408,6 @@ gboolean check_plugin_controls(gpointer data)
 		else if (!strcmp(anr_stat->value, "OFF"))
 		{
 			anr_enabled = 0;
-		}
-	}
-
-	if (eptt_stat)
-	{
-		if (!strcmp(eptt_stat->value, "ON"))
-		{
-			eptt_enabled = 1;
-		}
-		else if (!strcmp(eptt_stat->value, "OFF"))
-		{
-			eptt_enabled = 0;
 		}
 	}
 
@@ -7842,11 +7600,6 @@ void do_control_action(char *cmd)
 	{
 		on_power_down_button_click(NULL, NULL);
 	}
-	else if (!strcmp(request, "WFCALL"))
-	{
-		on_wf_call_button_click(NULL, NULL);
-	}
-
 	else if (!strcmp(request, "LOG"))
 	{
 		logbook_list_open();
@@ -8767,7 +8520,6 @@ int main(int argc, char *argv[])
 	set_field("#text_in", "");
 	field_set("REC", "OFF");
 	field_set("KBD", "OFF");
-	field_set("ePTT", "OFF");
 	field_set("MENU", "OFF");
 	field_set("TUNE", "OFF");
 	field_set("NOTCH", "OFF");
@@ -8828,6 +8580,13 @@ int main(int argc, char *argv[])
 	// Register a function to be called when the application exits
 	atexit(cleanup_on_exit);
 
+	// Catch the signals the operator (or a service manager) uses to stop the
+	// app, so we exit through atexit() and flush settings first. SIGKILL can't
+	// be caught, but ordinary `kill`, Ctrl-C, and systemd stop all send these.
+	signal(SIGINT, term_handler);
+	signal(SIGTERM, term_handler);
+	signal(SIGHUP, term_handler);
+
 #ifdef JJ_HEADLESS_DAEMON
 	ui_headless_loop();
 #else
@@ -8839,9 +8598,21 @@ int main(int argc, char *argv[])
 
 // Function to clean up resources when the application exits
 void cleanup_on_exit() {
-	// Close the frequency keypad if it's running
-	system("/home/pi/sbitx/src/cleanup_keypad.sh");
-	
+	// Persist settings on the way out. This runs for any normal exit() and,
+	// with the SIGINT/SIGTERM handler installed in main(), for the usual
+	// `kill`/Ctrl-C the operator uses to stop the app. (SIGKILL / -9 still
+	// can't be caught, but the periodic + TX saves cover that.)
+	save_user_settings(1);
+
 	// Add any other cleanup tasks here
 	printf("Cleaning up resources before exit\n");
+}
+
+// SIGINT/SIGTERM handler: exit cleanly so the atexit(cleanup_on_exit) handler
+// runs and settings get flushed. Without this, the default disposition for
+// these signals terminates the process immediately, skipping atexit — which is
+// why killing the app lost unsaved settings.
+static void term_handler(int signum) {
+	(void)signum;
+	exit(0);
 }

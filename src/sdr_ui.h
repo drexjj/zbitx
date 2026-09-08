@@ -43,8 +43,6 @@ extern int display_freq;
 #define FF_GRID 18
 #define FONT_BLACK 19
 
-#define EXT_PTT 26 //ADDED BY KF7YDU, solder lead wire to J17, which ties to pin 32. 
-extern int ext_ptt_enable;
 void enter_qso();
 void call_wipe();
 void write_console(int style, char *text);
@@ -57,4 +55,4 @@ void update_log_ed();
 void write_call_log();
 time_t time_sbitx();
 
-#define VER_STR "zbitx v5.07s"
+#define VER_STR "zbitx v5.05z"
