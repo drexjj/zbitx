@@ -186,8 +186,8 @@ static char *macro_expand_var(char *var, char *s){
 		macro_get_var(var, s);
 	else if (!strcmp(var, "CALL"))
 		macro_get_var(var, s);
-	else if (!strcmp(var, "SENTRSTCUT"))
-		strcpy(s, "5NN");
+	else if (!strcmp(var, "SENTRSTCUT")){
+		macro_get_var(var, s);		
 	else if (!strcmp(var, "SENTRST"))
 		macro_get_var(var, s);
 	else if (!strcmp(var, "EXCH") || !strcmp(var, "EXCHANGE"))
