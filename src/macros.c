@@ -186,10 +186,10 @@ static char *macro_expand_var(char *var, char *s){
 		macro_get_var(var, s);
 	else if (!strcmp(var, "CALL"))
 		macro_get_var(var, s);
-	else if (!strcmp(var, "SENTRSTCUT")){
-		macro_get_var(var, s);		
+	else if (!strcmp(var, "SENTRSTCUT"))
+        macro_get_var(var, s);		
 	else if (!strcmp(var, "SENTRST"))
-		macro_get_var(var, s);
+        macro_get_var(var, s);
 	else if (!strcmp(var, "EXCH") || !strcmp(var, "EXCHANGE"))
 		macro_get_var("EXCH", s);
 	else if (!strcmp(var, "GRID"))
