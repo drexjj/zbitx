@@ -1,7 +1,3 @@
-# v5.08
-- Increased waterfall polling for CW mode since we are now doing I2C bus calls.
-- Requires front panel firmare v5.07f or higher
-
 # v5.07
 - Added wifi control option to scan/connect/disconnect to wifi networks
 - Added USB mode control  option to set the mode of the USB port between CAT control or Keybaord/Mouse control
