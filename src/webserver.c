@@ -1179,6 +1179,7 @@ void check_websocket_connections() {
 void *webserver_thread_function(void *server){
   // Initialize global manager
   mg_mgr_init(&mgr);
+  mg_log_set(MG_LL_NONE);  // Silence Mongoose internal logging (incl. TLS handshake / OpenSSL alert-46 spam)
   
   // Note: Mongoose version may not support mg_mgr_set_option
   // We'll handle buffer issues with careful connection management instead
