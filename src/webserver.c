@@ -77,7 +77,7 @@ static int64_t last_ping_time = 0;  // Time of last ping check
 static struct mg_mgr mgr;  // Event manager
 
 // Debug flag for webserver logging
-static int webserver_debug_enabled = 1; // Set to 1 to enable verbose logging
+static int webserver_debug_enabled = 0; // Set to 1 to enable verbose logging
 
 // Helper function to read a file into a dynamically allocated buffer
 // Returns NULL on error, caller must free the buffer.
