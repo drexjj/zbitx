@@ -1,6 +1,6 @@
 # v5.08
-- Increased waterfall polling for CW mode since we are now doing I2C bus calls.
-- Requires front panel firmare v5.07f or higher
+- Added panel and software versions to the front panel
+- Requires front panel firmare v5.11f or higher
 
 # v5.07
 - Added wifi control option to scan/connect/disconnect to wifi networks
