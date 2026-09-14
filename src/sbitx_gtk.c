@@ -6779,6 +6779,14 @@ void zbitx_init(){
  	int e = i2cbb_write_i2c_block_data (ZBITX_I2C_ADDRESS, '{', 
 		strlen(buff), buff);
 
+	// Also push the version to a dedicated PIVERSION field so the front panel's
+	// Setup window can display the Pi's software version (not just the console).
+	{
+		char vbuff[100];
+		sprintf(vbuff, "PIVERSION Software version: %s}", VER_STR);
+		i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(vbuff), vbuff);
+	}
+
 
 	if (!e){
 		printf("zBitx front panel detected\n");
@@ -7022,7 +7030,7 @@ gboolean ui_tick(gpointer gook)
 
 		// update zbitx display much less often in CW or CWR modes
 		if (zbitx_mode == MODE_CW || zbitx_mode == MODE_CWR)
-			zbitx_poll_period = 100; // in CW/CWR (RX or TX): leave the GTK thread alone
+			zbitx_poll_period = 500; // in CW/CWR (RX or TX): leave the GTK thread alone
 
 		zbitx_poll_ticks++;
 		if (zbitx_available && zbitx_poll_ticks >= zbitx_poll_period)
@@ -8225,6 +8233,14 @@ void cmd_exec(char *cmd)
 	else if (!strcmp(exec, "vswr"))
 	{
 		set_field("#vswr", args);
+	}
+	// VERSION: the front panel requests the Pi software version (e.g. when its
+	// Setup window opens). Push it back into the panel's PIVERSION field.
+	else if (!strcmp(exec, "VERSION") || !strcmp(exec, "version"))
+	{
+		char vbuff[100];
+		sprintf(vbuff, "PIVERSION Software version: %s}", VER_STR);
+		i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(vbuff), vbuff);
 	}
 	// USB mode control: toggles (or sets) the USB port between CAT and
 	// Mouse/Keyboard mode by running /home/pi/usb-mode. The panel sends:
