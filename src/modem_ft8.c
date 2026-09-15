@@ -806,7 +806,7 @@ void ft8_on_signal_report(){
 	if (m3[0] == 'R'){
 		//skip the 'R'
 		field_set("RECV", m3+1);
-		ft8_tx(call, mycall, "RR73");  	
+		sprintf(reply_message, "%s %s RR73", call, mycall);  	
 		ft8_tx(reply_message, tx_pitch);
 	}
 	else{ 
