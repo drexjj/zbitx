@@ -446,12 +446,12 @@
                 <div id="tx_meters">
                     <div class="menu-item">
                         <label class="slider-label" for="POWER_meter">Watts</label>
-                        <meter id="POWER_meter" max="500" min="0" value="0"></meter>
+                        <meter id="POWER_meter" max="50" min="0" value="0"></meter>
                         <span id="POWER_reading"></span>
                     </div>
                     <div class="menu-item">
                         <label class="slider-label" for="REF_meter">SWR</label>
-                        <meter id="REF_meter" max="1000" min="0" value="0"></meter>
+                        <meter id="REF_meter" max="50" min="0" value="0"></meter>
                         <span id="REF_reading"></span>
                     </div>
                 </div>
@@ -527,9 +527,9 @@
                     </div>
                     <div class="linear" id="linear_PITCH">
                         <label class="linear-label" for="PITCH">PITCH</label>
-                        <input type="number" id="PITCH" min="0" max="100" class="linear-value">
+                        <input type="number" id="PITCH" min="100" max="3000" step="10" class="linear-value">
                         <div class="linear-dropdown">
-                            <input type="range" class="linear-slider" id="slider_PITCH" max="3000" min="50" step="10"
+                            <input type="range" class="linear-slider" id="slider_PITCH" max="3000" min="100" step="10"
                                 value="600">
                         </div>
                     </div>
@@ -1088,12 +1088,31 @@
         var power = parseInt(el("POWER").value);
         var ref = parseInt(el("REF").value);
 
-        if (power == 0)
-            ref = 10;
+        if (isNaN(power)) power = 0;
+        if (isNaN(ref)) ref = 0;
+
+        // When we're not transmitting, show the idle state (0 W, SWR 1.0)
+        // rather than whatever stale reflected-power reading is left over.
+        // Previously this was keyed on "power == 0", which also fired during a
+        // brief zero reading mid-transmission -- that's what made the meters
+        // flick to "0 W / SWR 1.0" while actually transmitting. Keying on the
+        // real TX state fixes that: during TX we always show the live values.
+        if (!in_tx) {
+            el("POWER_meter").value = 0;
+            el("POWER_reading").innerHTML = "0.0";
+            el("REF_meter").value = 10;      // 1.0 SWR (value is in tenths)
+            el("REF_reading").innerHTML = "1.0";
+            return;
+        }
 
         el("POWER_meter").value = power;
-        el("POWER_reading").innerHTML = (power / 10).toFixed(0);
+        el("POWER_reading").innerHTML = (power / 10).toFixed(1);
 
+        // Guard against a bogus SWR reading (e.g. reflected sample arriving
+        // before forward): with no real forward power, SWR is meaningless, so
+        // show 1.0 rather than a wild number.
+        if (power <= 0)
+            ref = 10;
         el("REF_meter").value = ref;
         el("REF_reading").innerHTML = (ref / 10).toFixed(1);
     }
@@ -3092,7 +3111,42 @@
         FT8_stylize_message_item(item, text, style);
         item.id = deco_strip(text).replace(/[^\w\-\~]+/g, "_");
         item.addEventListener("click", FT8_message_chosen);
-        el(list_id).children[0].appendChild(item);
+
+        // De-duplication key: the SAME transmission arrives more than once with
+        // different leading fields -- your own TX is reported as <WSJTX-TX> and
+        // then decoded again as <WSJTX-RX>, and the timestamp/confidence/signal/
+        // frequency tokens differ between those reports. Keying on the full text
+        // (item.id) would therefore miss them and the line shows twice in a
+        // pane. Instead key on the content that actually identifies the
+        // transmission -- everything from the '~' separator onward (the
+        // contact/sender callsigns and the message), which is stable across
+        // reports. The full text is still kept in item.id because the click
+        // handler parses it back into tokens.
+        var dedupeKey = text;
+        var stripped = deco_strip(text);
+        var tildeAt = stripped.indexOf('~');
+        if (tildeAt >= 0)
+            dedupeKey = stripped.substring(tildeAt).replace(/\s+/g, ' ').trim();
+        item.setAttribute('data-ft8key', dedupeKey);
+
+        var listContainer = el(list_id).children[0];
+
+        // If a row with the same content key already exists in THIS list,
+        // replace it in place (keeps styling/order current) instead of adding
+        // a duplicate. A message legitimately appearing in both the activity
+        // and rx panes is fine -- this check is per-list.
+        var existing = null;
+        for (var c = 0; c < listContainer.children.length; c++) {
+            if (listContainer.children[c].getAttribute('data-ft8key') === dedupeKey) {
+                existing = listContainer.children[c];
+                break;
+            }
+        }
+        if (existing) {
+            listContainer.replaceChild(item, existing);
+        } else {
+            listContainer.appendChild(item);
+        }
         item.scrollIntoView({ behaviour: 'smooth', block: 'nearest' });
     }
 
@@ -4103,9 +4157,8 @@
                         log("unhandled " + cmd + " : " + args);
                 */
 
-                if (cmd == 'REF') {
+                if (cmd == 'REF' || cmd == 'POWER') {
                     draw_meters();
-                    //				log("meter : " + el("POWER").value + "," + el("REF").value);
                 }
         }
     }
