@@ -42,6 +42,7 @@ The initial sync between the gui values, the core radio values, settings, et al 
 #include "ini.h"
 #include "hamlib.h"
 #include "remote.h"
+#include "wifi_panel.h"
 #include "modem_ft8.h"
 #include "i2cbb.h"
 #include "webserver.h"
@@ -1707,8 +1708,19 @@ void save_user_settings(int forced)
 		return;
 
 	char *path = getenv("HOME");
+	// In headless/service launches HOME may be unset or point somewhere the
+	// GUI build never used (e.g. /root under sudo, or empty under systemd),
+	// which silently sent settings to the wrong file -- so nothing was ever
+	// recalled. Verify the sbitx data dir actually exists under HOME; if not,
+	// fall back to the known install location the launcher (start.sh) uses.
+	char probe[256];
+	if (path && *path)
+		snprintf(probe, sizeof(probe), "%s/sbitx/data", path);
+	if (!path || !*path || access(probe, W_OK) != 0)
+		path = "/home/pi";
 	strcpy(file_path, path);
 	strcat(file_path, "/sbitx/data/user_settings.ini");
+	//printf("save_user_settings: writing %s\n", file_path);
 
 	// copy the current freq settings to the currently selected vfo.
 	// On startup, main() restores r1:freq FROM #vfo_a_freq, so if we don't
@@ -6749,6 +6761,10 @@ void zbitx_poll(int all){
 	zbitx_poll_done:
 	last_update = this_time;
 
+	/* Push any pending Wi-Fi status/scan results the background worker has
+	 * produced. Main-thread-only I2C write, same as everything else here. */
+	wifi_panel_poll();
+
 	/*  this block printed zbitx_poll() timing data during debug
 	clock_gettime(CLOCK_MONOTONIC, &_zp_t1);
 	long _zp_us = (_zp_t1.tv_sec - _zp_t0.tv_sec) * 1000000L
@@ -7031,6 +7047,28 @@ gboolean ui_tick(gpointer gook)
 		// update zbitx display much less often in CW or CWR modes
 		if (zbitx_mode == MODE_CW || zbitx_mode == MODE_CWR)
 			zbitx_poll_period = 500; // in CW/CWR (RX or TX): leave the GTK thread alone
+
+		// Re-detect the front panel if it wasn't present (or has since reset).
+		// The original code probed the panel exactly once at startup; if the Pi
+		// won that race (panel still booting), or if the panel later reset /
+		// was reflashed, zbitx_available stayed 0 forever and NOTHING was ever
+		// pushed -- so callsign/grid/passkey/frequency/bandstack loaded from
+		// user_settings.ini never reached the panel. Retry the probe roughly
+		// once a second while disconnected, and when it comes up, push ALL
+		// fields (all=1) so the loaded settings sync over immediately.
+		if (!zbitx_available){
+			static int redetect_ticks = 0;
+			if (++redetect_ticks >= 100){   // ~1s at the 10ms tick cadence
+				redetect_ticks = 0;
+				zbitx_init();               // sets zbitx_available on success
+				if (zbitx_available){
+					printf("zBitx front panel (re)connected -- syncing all fields\n");
+					zbitx_poll(1);          // full re-sync of every field value
+					send_smeter_to_panel();
+					zbitx_poll_ticks = 0;
+				}
+			}
+		}
 
 		zbitx_poll_ticks++;
 		if (zbitx_available && zbitx_poll_ticks >= zbitx_poll_period)
@@ -8234,6 +8272,15 @@ void cmd_exec(char *cmd)
 	{
 		set_field("#vswr", args);
 	}
+	// Front-panel Wi-Fi (station mode). The panel sends:
+	//   "WIFI scan" / "WIFI status" / "WIFI disconnect"
+	//   "WIFI connect <ssid>\t<psk>"  (TAB-separated; psk empty = open net)
+	// All nmcli work is threaded in wifi_panel_command(); results are pushed
+	// back to the panel from wifi_panel_poll() on the main thread.
+	else if (!strcmp(exec, "WIFI") || !strcmp(exec, "wifi"))
+	{
+		wifi_panel_command(args);
+	}
 	// VERSION: the front panel requests the Pi software version (e.g. when its
 	// Setup window opens). Push it back into the panel's PIVERSION field.
 	else if (!strcmp(exec, "VERSION") || !strcmp(exec, "version"))
@@ -8538,8 +8585,17 @@ int main(int argc, char *argv[])
 
 	char directory[200]; // dangerous, find the MAX_PATH and replace 200 with it
 	char *path = getenv("HOME");
+	// Must resolve to the SAME location save_user_settings() writes to, or
+	// settings save and load from different files and nothing is ever recalled
+	// (the headless/service HOME mismatch). Use the same probe + fallback.
+	char probe[256];
+	if (path && *path)
+		snprintf(probe, sizeof(probe), "%s/sbitx/data", path);
+	if (!path || !*path || access(probe, R_OK) != 0)
+		path = "/home/pi";
 	strcpy(directory, path);
 	strcat(directory, "/sbitx/data/user_settings.ini");
+	printf("loading settings from %s\n", directory);
 	initialize_macro_selection();
 	if (ini_parse(directory, user_settings_handler, NULL) < 0)
 	{
@@ -8605,6 +8661,7 @@ int main(int argc, char *argv[])
 	// hamlib_start();
 	initialize_hamlib();
 	remote_start();
+	wifi_panel_init();
 	rtc_read();
 
 	// zbitx
