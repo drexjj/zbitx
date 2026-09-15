@@ -12,6 +12,10 @@
 
 CC      := gcc
 
+# Version string, pulled from src/sdr_ui.h (#define VER_STR "zbitx vX.YZ").
+# := expands once at parse time by running the shell command.
+VERSION := $(shell grep VER src/sdr_ui.h | awk 'FNR==1{print $$4}' | sed -e 's/"//g')
+
 # ---- Source files -----------------------------------------------------------
 COMMON_SRC := \
 	src/vfo.c src/sbitx_sound.c src/fft_filter.c src/sbitx_gtk.c src/sbitx_utils.c \
@@ -68,6 +72,7 @@ db: dirs
 # --- zbitx (headless daemon; compiles sbitx.c with the daemon define) --------
 zbitx: EXTRA_CFLAGS := -DJJ_HEADLESS_DAEMON=1
 zbitx: db
+	@echo "compiling $@ version $(VERSION) in $(CURDIR)"
 	@[ "$(OPT)" = "o" ] && rm -f *.gcda || true
 	@[ "$(OPT)" = "g" ] && rm -f *.gcda || true
 	$(CC) $(FLAGS) $(EXTRA_CFLAGS) $(MONGOOSE_FLAGS) -o $@ \
@@ -78,7 +83,9 @@ zbitx: db
 	@if [ -x $@ ]; then \
 		sudo setcap 'cap_sys_nice,cap_sys_time+ep' $@ || :; \
 	fi
-	@echo "Build completed."
+	@echo "Build completed at $$(date)."
+	@echo "Version $(VERSION) brought to you by volunteers at Radio & Electronics Hub"
+	@echo "Please consider a small donation as a token of thanks.."
 
 clean:
 	rm -f zbitx
