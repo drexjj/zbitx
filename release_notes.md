@@ -1,6 +1,5 @@
 # v5.09
 - Fixed broken wifi controls in front panel
-- Added BFO shutdown sequence to end of cw keydown
 - Fixed RR73 sequence in FT8
 - Requires front panel firmare v5.11f or higher
 
