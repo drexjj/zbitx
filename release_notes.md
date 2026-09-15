@@ -1,3 +1,8 @@
+# v5.10
+- Fixed duplicate FT8 messages in web gui
+- Fixed pitch value max in web gui
+- Fixed power/SWR measurment discrepancy in web gui
+
 # v5.09
 - Fixed broken wifi controls in front panel
 - Fixed RR73 sequence in FT8

@@ -446,12 +446,12 @@
                 <div id="tx_meters">
                     <div class="menu-item">
                         <label class="slider-label" for="POWER_meter">Watts</label>
-                        <meter id="POWER_meter" max="500" min="0" value="0"></meter>
+                        <meter id="POWER_meter" max="50" min="0" value="0"></meter>
                         <span id="POWER_reading"></span>
                     </div>
                     <div class="menu-item">
                         <label class="slider-label" for="REF_meter">SWR</label>
-                        <meter id="REF_meter" max="1000" min="0" value="0"></meter>
+                        <meter id="REF_meter" max="50" min="0" value="0"></meter>
                         <span id="REF_reading"></span>
                     </div>
                 </div>
@@ -1088,12 +1088,31 @@
         var power = parseInt(el("POWER").value);
         var ref = parseInt(el("REF").value);
 
-        if (power == 0)
-            ref = 10;
+        if (isNaN(power)) power = 0;
+        if (isNaN(ref)) ref = 0;
+
+        // When we're not transmitting, show the idle state (0 W, SWR 1.0)
+        // rather than whatever stale reflected-power reading is left over.
+        // Previously this was keyed on "power == 0", which also fired during a
+        // brief zero reading mid-transmission -- that's what made the meters
+        // flick to "0 W / SWR 1.0" while actually transmitting. Keying on the
+        // real TX state fixes that: during TX we always show the live values.
+        if (!in_tx) {
+            el("POWER_meter").value = 0;
+            el("POWER_reading").innerHTML = "0.0";
+            el("REF_meter").value = 10;      // 1.0 SWR (value is in tenths)
+            el("REF_reading").innerHTML = "1.0";
+            return;
+        }
 
         el("POWER_meter").value = power;
-        el("POWER_reading").innerHTML = (power / 10).toFixed(0);
+        el("POWER_reading").innerHTML = (power / 10).toFixed(1);
 
+        // Guard against a bogus SWR reading (e.g. reflected sample arriving
+        // before forward): with no real forward power, SWR is meaningless, so
+        // show 1.0 rather than a wild number.
+        if (power <= 0)
+            ref = 10;
         el("REF_meter").value = ref;
         el("REF_reading").innerHTML = (ref / 10).toFixed(1);
     }
@@ -4138,9 +4157,8 @@
                         log("unhandled " + cmd + " : " + args);
                 */
 
-                if (cmd == 'REF') {
+                if (cmd == 'REF' || cmd == 'POWER') {
                     draw_meters();
-                    //				log("meter : " + el("POWER").value + "," + el("REF").value);
                 }
         }
     }
