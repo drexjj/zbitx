@@ -2424,11 +2424,8 @@ void calibrate_band_power(struct power_settings *b)
 		// on this band. Stop and use best_scale (the scale that gave the highest
 		// power). The stall counter only advances on steps that fail to set a new
 		// best, so a curve that's still creeping upward keeps calibrating; only a
-		// genuinely flat top ends it. Cut short (3 stalled steps) to spare the PA
-		// the extra over-drive: on bands that can't make the target, those trailing
-		// high-drive steps add heat for no power. Warm-up already guards against a
-		// single spurious peak ending a band prematurely.
-		if (stall_count >= 3)
+		// genuinely flat top ends it.
+		if (stall_count >= 5)
 		{
 			printf("*  plateau on %d at %d.%d W -- capping scale (PA saturated)\n",
 				   b->f_start, best_power / 10, best_power % 10);
