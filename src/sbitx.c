@@ -185,15 +185,18 @@ struct power_settings
 };
 
 struct power_settings band_power[] = {
-	{3500000, 4000000, 37, 0.002},
-	{5251500, 5360000, 40, 0.0015},
-	{7000000, 7300009, 40, 0.0015},
-	{10000000, 10200000, 35, 0.0019},
-	{14000000, 14300000, 35, 0.0025},
-	{18000000, 18200000, 20, 0.0023},
-	{21000000, 21450000, 20, 0.003},
-	{24800000, 25000000, 20, 0.0034},
-	{28000000, 29700000, 20, 0.0037}};
+	// {f_start, f_stop, max_watts, scale}
+	// max_watts is the TX power target txcal ramps each band up to. This is a
+	// 5W radio, so every band targets 5W.
+	{3500000, 4000000, 5, 0.002},
+	{5251500, 5360000, 5, 0.0015},
+	{7000000, 7300009, 5, 0.0015},
+	{10000000, 10200000, 5, 0.0019},
+	{14000000, 14300000, 5, 0.0025},
+	{18000000, 18200000, 5, 0.0023},
+	{21000000, 21450000, 5, 0.003},
+	{24800000, 25000000, 5, 0.0034},
+	{28000000, 29700000, 5, 0.0037}};
 
 #define CMD_TX (2)
 #define CMD_RX (3)
@@ -2330,7 +2333,11 @@ void calibrate_band_power(struct power_settings *b)
 	int i, j;
 
 	//	double scale_delta = b->scale / 25;
-	double scaling_factor = 0.0001;
+	// Start the ramp higher than the old 0.0001 seed. At 0.0004 every band still
+	// makes only ~1.5-2 W (well under the 5 W target), so no band can finish
+	// early here, but we skip ~15 pointless sub-2 W steps per band -- less total
+	// key-down time and less cumulative PA heating.
+	double scaling_factor = 0.0004;
 	b->scale = scaling_factor;
 	set_tx_power_levels();
 	delay(50);
@@ -2338,26 +2345,109 @@ void calibrate_band_power(struct power_settings *b)
 	tr_switch(1);
 	delay(100);
 
-	for (i = 0; i < 200 && b->scale < 0.015; i++)
+	// Ramp the power scale up until we either reach the target watts OR the
+	// amplifier plateaus (power stops rising with more drive). 
+	int best_power = 0;           // best average power seen, in 1/10th W
+	double best_scale = b->scale; // scale that produced best_power
+	int stall_count = 0;          // consecutive steps with no meaningful gain
+
+	for (i = 0; i < 200 && b->scale < 0.05; i++)
 	{
 		scaling_factor *= 1.1;
 		b->scale = scaling_factor;
 		set_tx_power_levels();
-		delay(50); // let the new power levels take hold
+		delay(150); // let the new power levels take hold
 
-		int avg = 0;
-		// take many readings to get a peak
-		for (j = 0; j < 10; j++)
+		// Read the CURRENT forward power, not the peak-held display value.
+		// The RP2040 telemetry (fwdpower) is peak-held and only republished about
+		// once a second, so simply sampling fwdpower in a tight loop returns a
+		// stale value that never tracks the rising scale. Reset the peak-hold and
+		// wait long enough for genuinely fresh samples to arrive, then average a
+		// few of them.
+		fwdpower_calc = 0;
+		fwdpower_cnt  = 0;
+		fwdpower      = 0;
+		delay(400); // allow several fresh RP2040 telemetry updates
+
+		int avg = 0, n = 0;
+		for (j = 0; j < 20; j++)
 		{
-			delay(20);
-			avg += fwdpower / 10; // fwdpower in 1/10th of a watt
-								  //			printf("  avg %d, fwd %d scale %g\n", avg, fwdpower, b->scale);
+			delay(30);
+			if (fwdpower > 0) { avg += fwdpower; n++; } // fwdpower in 1/10th W
 		}
-		avg /= 10;
-		printf("*%d, f %d : avg %d, max = %d\n", i, b->f_start, avg, b->max_watts);
-		if (avg >= b->max_watts)
+		avg = n ? avg / n : 0; // average, still in 1/10th of a watt
+		printf("*%d, f %d : scale %g : avg %d.%d W, target = %d W\n",
+			   i, b->f_start, b->scale, avg / 10, avg % 10, b->max_watts);
+
+		// The first few steps are unreliable. Ignore so we can get a stable reading
+		#define CAL_WARMUP 3
+		if (i < CAL_WARMUP)
+		{
+			// during warm-up: reach-target still counts, but do NOT let these
+			// readings seed best_power (they're unreliable). Reset the baseline
+			// on the last warm-up step so real tracking starts clean.
+			if (avg >= b->max_watts * 10)
+			{
+				best_power = avg;
+				best_scale = b->scale;
+				break;
+			}
+			if (i == CAL_WARMUP - 1)
+			{
+				best_power = 0;   // discard spurious warm-up peaks
+				stall_count = 0;
+			}
+			continue;
+		}
+
+		// Track the best power and the scale that produced it. ANY improvement
+		// counts -- even a slow +0.1 W gain near the top of the curve -- so the
+		// stored scale always matches the highest power actually measured, not an
+		// earlier lower reading. (Previously a 0.2 W "meaningful gain" threshold
+		// rejected these slow gains, so the peak kept rising while best_scale
+		// stayed behind, and the band saved a scale below its true peak.)
+		if (avg > best_power)
+		{
+			best_power = avg;
+			best_scale = b->scale;
+			stall_count = 0; // still improving
+		}
+		else
+		{
+			stall_count++;   // no new peak this step
+		}
+
+		if (avg >= b->max_watts * 10) // reached the target, done
 			break;
+
+		// Plateau: no NEW peak for several steps in a row -> the PA has saturated
+		// on this band. Stop and use best_scale (the scale that gave the highest
+		// power). The stall counter only advances on steps that fail to set a new
+		// best, so a curve that's still creeping upward keeps calibrating; only a
+		// genuinely flat top ends it. Cut short (3 stalled steps) to spare the PA
+		// the extra over-drive: on bands that can't make the target, those trailing
+		// high-drive steps add heat for no power. Warm-up already guards against a
+		// single spurious peak ending a band prematurely.
+		if (stall_count >= 3)
+		{
+			printf("*  plateau on %d at %d.%d W -- capping scale (PA saturated)\n",
+				   b->f_start, best_power / 10, best_power % 10);
+			break;
+		}
+
+		// Hard scale ceiling: if drive has already climbed well past what any band
+		// needs (>0.006) and we still haven't reached the target, the PA is clearly
+		// saturated -- stop now rather than hammering it to the 0.05 loop limit.
+		if (b->scale > 0.006 && avg < b->max_watts * 10)
+		{
+			printf("*  scale ceiling on %d at %d.%d W -- capping (PA saturated)\n",
+				   b->f_start, best_power / 10, best_power % 10);
+			break;
+		}
 	}
+
+	// Use the scale that gave the most power (never the over-driven ceiling).
+	b->scale = best_scale;
 	tr_switch(0);
 	printf("*tx scale for %d is set to %g\n", b->f_start, b->scale);
 	delay(100);
@@ -2400,9 +2490,22 @@ void *calibration_thread_function(void *server)
 	int old_tx_drive = tx_drive;
 
 	in_calibration = 1;
-	for (int i = 0; i < sizeof(band_power) / sizeof(struct power_settings); i++)
+	int nbands = sizeof(band_power) / sizeof(struct power_settings);
+	for (int i = 0; i < nbands; i++)
 	{
 		calibrate_band_power(band_power + i);
+
+		// Cool-down between bands: the PA is unkeyed (calibrate_band_power ends
+		// with tr_switch(0)), so pause to let the heatsink shed heat before the
+		// next band's TX burst. Skip the wait after the final band. This adds
+		// wall-clock time but lowers peak MOSFET junction temperature across the
+		// run. Adjust CAL_BAND_COOLDOWN_MS to taste (0 disables).
+		#define CAL_BAND_COOLDOWN_MS 20000
+		if (CAL_BAND_COOLDOWN_MS > 0 && i < nbands - 1)
+		{
+			printf("*  cooling down %d ms before next band\n", CAL_BAND_COOLDOWN_MS);
+			delay(CAL_BAND_COOLDOWN_MS);
+		}
 	}
 	in_calibration = 0;
 

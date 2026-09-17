@@ -1,3 +1,7 @@
+# v5.11
+- Added automatic PA hardware calibration function (see Toolbox for new app)
+- Changed the SSL certificate to zbitx.local
+
 # v5.10
 - Fixed duplicate FT8 messages in web gui
 - Fixed pitch value max in web gui
