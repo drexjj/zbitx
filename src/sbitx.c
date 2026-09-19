@@ -2337,7 +2337,8 @@ void calibrate_band_power(struct power_settings *b)
 	// makes only ~1.5-2 W (well under the 5 W target), so no band can finish
 	// early here, but we skip ~15 pointless sub-2 W steps per band -- less total
 	// key-down time and less cumulative PA heating.
-	double scaling_factor = 0.0004;
+	const double CAL_START_SCALE = 0.0004;
+	double scaling_factor = CAL_START_SCALE;
 	b->scale = scaling_factor;
 	set_tx_power_levels();
 	delay(50);
@@ -2443,10 +2444,25 @@ void calibrate_band_power(struct power_settings *b)
 		}
 	}
 
-	// Use the scale that gave the most power (never the over-driven ceiling).
-	b->scale = best_scale;
+	// Back the stored scale off by CAL_BACKOFF_STEPS ramp steps from the peak.
+	// We still FIND the peak (best_scale -- the drive that produced the most
+	// power), but we SAVE a slightly lower drive: two 1.1x steps below the peak,
+	// which is about 21% less. This gives a little less max output at full drive
+	// in exchange for more headroom below saturation -- better linearity and
+	// lower MOSFET stress, for longer PA life. The ramp is strictly geometric
+	// (x1.1 per step), so two steps back is best_scale / 1.1 / 1.1.
+	#define CAL_BACKOFF_STEPS 2
+	double stored_scale = best_scale;
+	for (int k = 0; k < CAL_BACKOFF_STEPS; k++)
+		stored_scale /= 1.1;
+	// Never drop below the ramp's starting drive.
+	if (stored_scale < CAL_START_SCALE)
+		stored_scale = CAL_START_SCALE;
+
+	b->scale = stored_scale;
 	tr_switch(0);
-	printf("*tx scale for %d is set to %g\n", b->f_start, b->scale);
+	printf("*tx peak scale for %d was %g; storing %g (%d steps back for headroom)\n",
+		   b->f_start, best_scale, b->scale, CAL_BACKOFF_STEPS);
 	delay(100);
 }
 
