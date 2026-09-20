@@ -6803,6 +6803,23 @@ void zbitx_init(){
 		i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(vbuff), vbuff);
 	}
 
+	// Push the current macro list to the panel at startup so its MACRO selection
+	// field is populated from the real ~/sbitx/web/ .mc files right away (the
+	// panel also re-requests this whenever the Radio menu opens). Mirrors the
+	// GTK dropdown's initialize_macro_selection().
+	{
+		char macro_names[512] = "";
+		macro_list(macro_names);
+		if (strlen(macro_names) == 0)
+			strcpy(macro_names, "FT8|CW1|CQWWRUN|RUN|SP|");
+		for (char *p = macro_names; *p; p++)
+			if (*p == '|')
+				*p = (*(p + 1) == '\0') ? '\0' : '/';
+		char mbuff[600];
+		snprintf(mbuff, sizeof mbuff, "MACROLIST %s}", macro_names);
+		i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(mbuff), mbuff);
+	}
+
 
 	if (!e){
 		printf("zBitx front panel detected\n");
@@ -8288,6 +8305,27 @@ void cmd_exec(char *cmd)
 		char vbuff[100];
 		sprintf(vbuff, "PIVERSION Software version: %s}", VER_STR);
 		i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(vbuff), vbuff);
+	}
+	// MACROLIST: the front panel requests the current set of macro files (e.g.
+	// when the Radio menu opens). We scan ~/sbitx/web/ for .mc files -- exactly
+	// what the GTK dropdown does via initialize_macro_selection() -- and push the
+	// '/'-delimited list back so the panel's MACRO selection field cycles through
+	// the real files instead of a static built-in list. Add a .mc file on the Pi
+	// and it shows up here on the next request, no firmware change needed.
+	else if (!strcmp(exec, "MACROLIST") || !strcmp(exec, "macrolist"))
+	{
+		char macro_names[512] = "";
+		macro_list(macro_names);          // returns "NAME1|NAME2|...|"
+		if (strlen(macro_names) == 0)
+			strcpy(macro_names, "FT8|CW1|CQWWRUN|RUN|SP|");  // same fallback as GTK
+		// Convert '|' separators to '/', dropping any trailing separator, to
+		// match the FIELD_SELECTION format the panel expects.
+		for (char *p = macro_names; *p; p++)
+			if (*p == '|')
+				*p = (*(p + 1) == '\0') ? '\0' : '/';
+		char mbuff[600];
+		snprintf(mbuff, sizeof mbuff, "MACROLIST %s}", macro_names);
+		i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(mbuff), mbuff);
 	}
 	// USB mode control: toggles (or sets) the USB port between CAT and
 	// Mouse/Keyboard mode by running /home/pi/usb-mode. The panel sends:
