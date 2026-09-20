@@ -46,7 +46,7 @@ cd $HOME && cp -r sbitx_orig/web/*.mc sbitx/web/ && cp -r sbitx_orig/data/* sbit
 For detailed installation and upgrade instructions, please visit the [Wiki Page](https://github.com/drexjj/zbitx/wiki/) which will be created in the future.
 
 ```console
-cd $HOME && git clone https://github.com/drexjj/zbitx && mv zbitx sbitx
+cd "$HOME" && git clone https://github.com/drexjj/zbitx sbitx
 ```
 
 ## 📥 Download the 32-Bit Image
