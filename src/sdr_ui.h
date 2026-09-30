@@ -55,4 +55,4 @@ void update_log_ed();
 void write_call_log();
 time_t time_sbitx();
 
-#define VER_STR "zbitx v5.11s-cw1"
+#define VER_STR "zbitx v5.12s-cw1"

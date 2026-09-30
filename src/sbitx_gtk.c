@@ -252,6 +252,11 @@ struct Queue q_web;
 
 //zbitx 
 static uint8_t zbitx_available = 0;
+// Full-resync bookkeeping for the front panel.
+static uint8_t zbitx_resync_pending = 0;
+static unsigned int zbitx_last_full_sync = 0;
+static int zbitx_read_failures = 0;
+#define ZBITX_MAX_READ_FAILURES 5
 int update_logs = 0;
 #define ZBITX_I2C_ADDRESS 0xa
 void zbitx_init();
@@ -952,6 +957,8 @@ struct field main_controls[] = {
 	 "ON/OFF", 0, 0, 0, FT8_CONTROL},
 	{"#ft8_repeat", NULL, 1000, -1000, 50, 50, "FT8_REPEAT", 40, "5", FIELD_NUMBER, FONT_FIELD_VALUE,
 	 "", 1, 10, 1, FT8_CONTROL},
+	{"#ft8_one_tap", NULL, 1000, -1000, 50, 50, "1-TAP", 40, "ON", FIELD_TOGGLE, FONT_FIELD_VALUE,
+	 "ON/OFF", 0, 0, 0, 0},
 
 	{"#telneturl", NULL, 1000, -1000, 400, 149, "TELNETURL", 70, "dxc.nc7j.com:7373", FIELD_TEXT, FONT_SMALL,
 	 "", 0, 32, 1, 0},
@@ -1825,6 +1832,8 @@ static int get_band_stack_index(const char *p_value)
 	return ix;
 }
 
+static char loaded_vfo[4] = "";
+
 static int user_settings_handler(void *user, const char *section,
 								 const char *name, const char *value)
 {
@@ -1851,6 +1860,11 @@ static int user_settings_handler(void *user, const char *section,
 	else if (strlen(section) == 0)
 	{
 		sprintf(cmd, "%s", name);
+		if (!strcmp(cmd, "#vfo"))
+		{
+			strncpy(loaded_vfo, value, sizeof(loaded_vfo) - 1);
+			loaded_vfo[sizeof(loaded_vfo) - 1] = 0;
+		}
 		// skip the button actions
 		struct field *f = get_field(cmd);
 		if (f)
@@ -6091,8 +6105,7 @@ int key_poll(int input_method) {
 
   // Handle straight key input
   if (input_method == CW_STRAIGHT) {
-//    if ((digitalRead(PTT) == LOW) || (digitalRead(DASH) == LOW)) {
-    if (digitalRead(DASH) == LOW) {
+    if (digitalRead(DASH) == LOW) { // Modified to support mono straight key jacks - PA3CNO
       key = CW_DOWN;
     }
   } 
@@ -6529,24 +6542,13 @@ static void zbitx_logs(){
 
 void send_smeter_to_panel(void)
 {
-	// Push the S-meter reading to the RP2040 front panel over I2C.
-	// This used to live inside draw_spectrum() (the Cairo redraw path), which
-	// meant it never ran in headless mode and the panel S-meter froze. It now
-	// runs from zbitx_poll() so it updates in both GUI and headless operation.
 	if (!zbitx_available)
 		return;
 
-	// Respect the same on/off toggle the GUI meter uses.
-	// NOTE: field_str() looks up by LABEL, so "SMETEROPT" is correct here,
-	// and it can return NULL if the field isn't found - guard against that.
 	const char *smeteropt = field_str("SMETEROPT");
 	if (!smeteropt || strcmp(smeteropt, "ON"))
 		return;
 
-	// Suppress during voice TX (USB/LSB/AM), matching draw_spectrum().
-	// The mode field is looked up by its cmd via get_field("r1:mode"),
-	// NOT field_str() (which matches on label and would return NULL for
-	// "r1:mode", causing strcmp(NULL,...) to segfault on TX).
 	struct field *mode_f = get_field("r1:mode");
 	if (mode_f && in_tx &&
 		(!strcmp(mode_f->value, "USB") || !strcmp(mode_f->value, "LSB") || !strcmp(mode_f->value, "AM")))
@@ -6564,40 +6566,38 @@ void send_smeter_to_panel(void)
 	i2cbb_write_i2c_block_data(0x0a, '{', strlen(smeter_buff), smeter_buff);
 }
 
+static const char *zbitx_label_map[][2] = {
+	// { Pi label, panel label }
+	{"FT8_TX1ST", "TX1ST"},
+	{"FT8_AUTO", "AUTO"},
+	{NULL, NULL}};
+
+// Pi label -> label the panel knows
+static const char *zbitx_panel_label(const char *pi_label)
+{
+	for (int i = 0; zbitx_label_map[i][0]; i++)
+		if (!strcmp(pi_label, zbitx_label_map[i][0]))
+			return zbitx_label_map[i][1];
+	return pi_label;
+}
+
+// panel label -> Pi label (NULL if it isn't one of the translated ones)
+static const char *zbitx_pi_label(const char *panel_label)
+{
+	for (int i = 0; zbitx_label_map[i][0]; i++)
+		if (!strcmp(panel_label, zbitx_label_map[i][1]))
+			return zbitx_label_map[i][0];
+	return NULL;
+}
+
 void zbitx_poll(int all){
 	char buff[3000];
 	static unsigned int last_update = 0;
-
-	// timing instrumentation here is to determine if zbitx_poll() 
-	// is a source of the~once/sec, ~25-30ms audio-thread stalls in sound_loop.
-	// This runs on the GTK thread and does
-	// bit-banged I2C (CPU-spinning busy-waits, not sleeps) for every
-	// changed field, potentially with retries. 
-	/*
-	struct timespec _zp_t0, _zp_t1;
-	clock_gettime(CLOCK_MONOTONIC, &_zp_t0);
-	static struct timespec _zp_epoch;
-	static int _zp_have_epoch = 0;
-	if (!_zp_have_epoch) { _zp_epoch = _zp_t0; _zp_have_epoch = 1; }
-	*/
-	// --- end timing startup ---
-
 	int count = 0;
 	int e = 0;
 	int retry;
 	unsigned int this_time = millis();
 
-	// Computed once, up front, so both the per-field push loop below and the
-	// spectrum push further down share the same CW-TX gate. Measured (Evan, AC9TU
-	// pre-fix): 52-66ms/call with fields_sent=2 -- i.e. this loop's
-	// unconditional delay(10) per pushed field (plus up to delay(3) per
-	// retry) was already most of the cost even before the spectrum push.
-	// After gating just the spectrum push, calls were still 29-44ms, which
-	// is squarely in the range 2 fields * delay(10) (+ retries) would cost.
-	// Nobody is watching the remote display's field values while actively
-	// keying CW/CWR either, so defer them the same way: don't push, and
-	// don't advance last_update, so the next non-CW-TX call catches up
-	// everything that changed while we were transmitting.
 	int _zp_mode = mode_id(get_field("r1:mode")->value);
 	int _zp_cw_tx = in_tx && (_zp_mode == MODE_CW || _zp_mode == MODE_CWR);
 
@@ -6607,7 +6607,7 @@ void zbitx_poll(int all){
 			if (!strcmp(f->label, "WATERFALL") || !strcmp(f->label, "SPECTRUM"))
 				continue;
 			if (all || f->updated_at >  last_update){
-				sprintf(buff, "%s %s}", f->label, f->value);
+				sprintf(buff, "%s %s}", zbitx_panel_label(f->label), f->value);
 				retry = 3;
 				do {
 					e = i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(buff), buff);
@@ -6625,6 +6625,8 @@ void zbitx_poll(int all){
 			}
 		}
 		last_update = this_time;
+		if (all)
+			zbitx_last_full_sync = millis(); // marks when the full push finished
 	}
 	
 	//check if the console q has any new updates
@@ -6643,16 +6645,6 @@ void zbitx_poll(int all){
 	}
 
 
-	// The spectrum push is a bulky bit-banged I2C write (spectrum bins
-	// serialized to text) and is the single most expensive thing this
-	// function does During CW/CWR TX, modem_poll() is being
-	// called on *every* ui_tick() to keep up with the keyer, on this same
-	// GTK thread. Blocking that thread here for the duration of a spectrum
-	// push directly reintroduces the paddle-timing staleness problem that
-	// was fixed in modem_cw.c. Skip updating the spectrum display
-	// while sending CW, so the display just keeps its last
-	// frame whenever we're actively transmitting CW/CWR.
-	// _zp_cw_tx was already computed above, before the per-field push loop.
 	if (!_zp_cw_tx) {
 		zbitx_get_spectrum(buff);
 		strcat(buff, "}"); //terminate the block
@@ -6676,6 +6668,7 @@ void zbitx_poll(int all){
 	int  reply_length;
 
 	if ((reply_length = i2cbb_read_rll(0xa, buff)) != -1){
+		zbitx_read_failures = 0;
 	//zero terminate the reply
 		buff[reply_length] = 0;
 
@@ -6764,6 +6757,15 @@ void zbitx_poll(int all){
 		if (now_ms - last_fail_print > 2000) {
 			fprintf(stderr, "zbitx_poll: i2cbb_read_rll(0xa) FAILED (-1)\n");
 			last_fail_print = now_ms;
+		}
+		// Several reads in a row failing means the panel has gone away (reset,
+		// reflash, brown-out). Drop back to "not available" so the redetect
+		// path in ui_tick() re-pushes ALL fields once it answers again, instead
+		// of leaving a freshly booted panel showing its compiled-in defaults.
+		if (++zbitx_read_failures >= ZBITX_MAX_READ_FAILURES){
+			fprintf(stderr, "zbitx_poll: front panel not responding, will resync when it returns\n");
+			zbitx_available = 0;
+			zbitx_read_failures = 0;
 		}
 	}
 	zbitx_poll_done:
@@ -7097,6 +7099,15 @@ gboolean ui_tick(gpointer gook)
 		}
 
 		zbitx_poll_ticks++;
+		// The panel asked for a full resync ("SYNC", sent when it boots).
+		if (zbitx_available && zbitx_resync_pending)
+		{
+			zbitx_resync_pending = 0;
+			printf("zBitx front panel requested a resync -- sending all fields\n");
+			zbitx_poll(1);
+			send_smeter_to_panel();
+			zbitx_poll_ticks = 0;
+		}
 		if (zbitx_available && zbitx_poll_ticks >= zbitx_poll_period)
 		{
 			zbitx_poll(0);
@@ -8364,6 +8375,16 @@ void cmd_exec(char *cmd)
 		sprintf(vbuff, "PIVERSION Software version: %s}", VER_STR);
 		i2cbb_write_i2c_block_data(ZBITX_I2C_ADDRESS, '{', strlen(vbuff), vbuff);
 	}
+	// SYNC: the front panel has just booted and holds only its compiled-in
+	// defaults. Schedule a full push of every field (done from ui_tick(), not
+	// here, since we may be inside zbitx_poll's reply handling). If we already
+	// did a full sync in the last few seconds (normal Pi start-up, or the
+	// redetect path) that one already covered it.
+	else if (!strcmp(exec, "SYNC"))
+	{
+		if (millis() - zbitx_last_full_sync > 3000)
+			zbitx_resync_pending = 1;
+	}
 	// MACROLIST: the front panel requests the current set of macro files (e.g.
 	// when the Radio menu opens). We scan ~/sbitx/web/ for .mc files -- exactly
 	// what the GTK dropdown does via initialize_macro_selection() -- and push the
@@ -8473,26 +8494,23 @@ void cmd_exec(char *cmd)
 		// conver the string to upper if not already so
 		for (char *p = exec; *p; p++)
 			*p = toupper(*p);
-		struct field *f = get_field_by_label(exec);
+		// a few panel labels differ from the Pi's (e.g. TX1ST -> FT8_TX1ST)
+		const char *pi_label = zbitx_pi_label(exec);
+		struct field *f = get_field_by_label(pi_label ? pi_label : exec);
 		if (f)
 		{
-			// convert all the letters to uppercase
-			for (char *p = args; *p; p++)
-				*p = toupper(*p);
+			// convert all the letters to uppercase -- except the passkey,
+			// which the web login compares case-sensitively. Uppercasing it
+			// here made a passkey entered on the front panel unusable.
+			if (strcmp(f->cmd, "#passkey"))
+				for (char *p = args; *p; p++)
+					*p = toupper(*p);
 			if (set_field(f->cmd, args))
 			{
 				write_console(FONT_LOG, "Invalid setting:");
 			}
 			else
 			{
-				// Fire the field's own edit callback so the new value is
-				// applied, not just stored. Numeric DSP controls (NOTCH freq,
-				// WFMIN/MAX, SCOPEGAIN, BFO, TXMON, ...) latch their value into
-				// a DSP variable inside do_*_edit(); without this call, a value
-				// arriving from the RP2040 front panel would update the on-screen
-				// number but never take effect. Toggles are unaffected (their
-				// callback just re-reads the field). FIELD_EDIT mirrors how the
-				// GTK edit path invokes fn() after a local edit.
 				if (f->fn)
 					f->fn(f, NULL, FIELD_EDIT, 0, 0, 0);
 
@@ -8664,7 +8682,7 @@ int main(int argc, char *argv[])
 
 	strcpy(vfo_a_mode, "USB");
 	strcpy(vfo_b_mode, "LSB");
-	set_field("#mycallsign", "NOBODY");
+	set_field("#mycallsign", "MYCALL");
 	// vfo_a_freq = 14000000;
 	// vfo_b_freq = 7000000;
 
@@ -8672,12 +8690,12 @@ int main(int argc, char *argv[])
 	update_field(f);
 	set_volume(20000000);
 
-	set_field("r1:freq", "7000000");
+	set_field("r1:freq", "7100000");
 	set_field("r1:mode", "USB");
 	set_field("tx_gain", "24");
 	set_field("tx_power", "40");
-	set_field("r1:gain", "41");
-	set_field("r1:volume", "85");
+	set_field("r1:gain", "51");
+	set_field("r1:volume", "65");
 
 	char directory[200]; // dangerous, find the MAX_PATH and replace 200 with it
 	char *path = getenv("HOME");
@@ -8715,8 +8733,51 @@ int main(int argc, char *argv[])
 
 	char buff[1000];
 
-	// now set the frequency of operation and more to vfo_a
-	set_field("r1:freq", get_field("#vfo_a_freq")->value);
+	// restore the saved VFO selection (see loaded_vfo above). Set the value
+	// directly: the VFO A/B control action would swap frequencies around.
+	if (!strcmp(loaded_vfo, "A") || !strcmp(loaded_vfo, "B"))
+	{
+		struct field *f_vfo = get_field("#vfo");
+		strcpy(f_vfo->value, loaded_vfo);
+		update_field(f_vfo);
+	}
+
+	// now set the frequency of operation and more to the active vfo.
+	// save_user_settings() mirrors the live frequency into whichever VFO is
+	// selected, so restoring from #vfo_a_freq unconditionally brought the
+	// radio up on VFO A's frequency while still showing VFO B.
+	if (!strcmp(get_field("#vfo")->value, "B"))
+		set_field("r1:freq", get_field("#vfo_b_freq")->value);
+	else
+		set_field("r1:freq", get_field("#vfo_a_freq")->value);
+
+	// Re-apply the saved per-mode bandwidth. r1:mode is loaded early in the
+	// file (and set_radio_mode() copies BW_CW/BW_VOICE/... into BW), but the
+	// #bw_* values are loaded near the end -- so BW was always set from the
+	// compiled-in default, not the saved one.
+	{
+		const char *bw_label = NULL;
+		switch (mode_id(get_field("r1:mode")->value))
+		{
+		case MODE_CW:
+		case MODE_CWR:
+			bw_label = "BW_CW";
+			break;
+		case MODE_USB:
+		case MODE_LSB:
+			bw_label = "BW_VOICE";
+			break;
+		case MODE_AM:
+			bw_label = "BW_AM";
+			break;
+		case MODE_FT8: // FT8 uses a fixed filter, keep what was loaded
+			break;
+		default:
+			bw_label = "BW_DIGITAL";
+		}
+		if (bw_label && field_str(bw_label) && atoi(field_str(bw_label)) > 0)
+			field_set("BW", field_str(bw_label));
+	}
 
 	console_init();
 	write_console(FONT_LOG, VER_STR);
@@ -8780,18 +8841,6 @@ int main(int argc, char *argv[])
 
 	// moved initialization up ahead of the first time it gets checked
 	//initialize_macro_selection();
-
-
-	// test to pass values to eq
-	//   modify_eq_band_frequency(&tx_eq, 3, 1505.0);
-	//   modify_eq_band_gain(&tx_eq, 3, -16);
-	//   modify_eq_band_bandwidth(&tx_eq, 3, 6);
-	//   print_eq_int(&tx_eq);
-
-	//	open_url("http://127.0.0.1:8080");
-	//	execute_app("chromium-browser --log-leve=3 "
-	//	"--enable-features=OverlayScrollbar http://127.0.0.1:8080"
-	//	"  &>/dev/null &");
 
     int cw_error = cw_runtime_start();
     if (cw_error) {
