@@ -20,7 +20,7 @@ VERSION := $(shell grep VER src/sdr_ui.h | awk 'FNR==1{print $$4}' | sed -e 's/"
 COMMON_SRC := \
 	src/vfo.c src/sbitx_sound.c src/fft_filter.c src/sbitx_gtk.c src/sbitx_utils.c \
 	src/i2c.c src/si5351v2.c src/ini.c src/hamlib.c src/queue.c src/modems.c src/logbook.c \
-	src/modem_cw.c src/settings_ui.c src/hist_disp.c src/ntputil.c \
+	src/modem_cw.c src/cw_runtime.c src/radio_control.c src/settings_ui.c src/hist_disp.c src/ntputil.c \
 	src/telnet.c src/macros.c src/modem_ft8.c src/remote.c src/mongoose.c src/para_eq.c \
 	src/webserver.c src/eq_ui.c src/wifi_panel.c
 
@@ -75,7 +75,7 @@ zbitx: db
 	@echo "compiling $@ version $(VERSION) in $(CURDIR)"
 	@[ "$(OPT)" = "o" ] && rm -f *.gcda || true
 	@[ "$(OPT)" = "g" ] && rm -f *.gcda || true
-	$(CC) $(FLAGS) $(EXTRA_CFLAGS) $(MONGOOSE_FLAGS) -o $@ \
+	$(CC) -std=gnu11 $(FLAGS) $(EXTRA_CFLAGS) $(MONGOOSE_FLAGS) -o $@ \
 		$(COMMON_SRC) src/sbitx.c \
 		$(FT8_LIB) \
 		$(LIBS) $(GTK_CFLAGS) $(GTK_LIBS)
@@ -92,3 +92,15 @@ clean:
 
 distclean: clean
 	rm -f *.gcda
+
+.PHONY: test-cw
+test-cw:
+	$(CC) -std=gnu11 -O2 -DCW_RUNTIME_TEST -Itests -Isrc \
+		tests/test_cw.c src/cw_runtime.c -o tests/test-cw -lm
+	./tests/test-cw
+	$(CC) -std=gnu11 -O2 -DCW_RUNTIME_TEST -Isrc \
+		tests/test_queue_threads.c src/cw_runtime.c -o tests/test-cw-threads -pthread
+	./tests/test-cw-threads
+	$(CC) -std=gnu11 -O2 -Isrc tests/test_workers.c src/cw_runtime.c \
+		-o tests/test-cw-workers -pthread
+	./tests/test-cw-workers
