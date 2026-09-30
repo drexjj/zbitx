@@ -182,7 +182,7 @@ static void get_updates(struct mg_connection *c, int all){
 
 static void do_login(struct mg_connection *c, char *key){
 
-	char passkey[20];
+	char passkey[64]; // #passkey allows up to 32 chars; 20 overflowed
 	get_field_value("#passkey", passkey);
 
 	//look for key only on non-local ip addresses
