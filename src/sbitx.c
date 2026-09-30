@@ -1,3 +1,6 @@
+#include "cw_runtime.h"
+#include "radio_control.h"
+#include "modem_cw.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -51,9 +54,9 @@ FILE *pf_debug = NULL;
 #define SBITX_V4 (4)
 
 int sbitx_version = -1;
-int fwdpower, vswr;
-int fwdpower_calc;
-int fwdpower_cnt;
+atomic_int fwdpower, vswr;
+atomic_int fwdpower_calc;
+atomic_int fwdpower_cnt;
 int vbatt_raw = 0;   /* raw battery voltage integer from RP2040 front panel */
 
 float fft_bins[MAX_BINS]; // spectrum ampltiudes
@@ -104,7 +107,7 @@ struct filter *tx_filter; // convolution filter
 static double tx_amp = 0.0;
 static double alc_level = 1.0;
 static int tr_relay = 0;
-static int rx_pitch = 700;   // should probably us get_pitch() directly
+static int rx_pitch = 600;   // should probably us get_pitch() directly
 static int bridge_compensation = 100;
 static double voice_clip_level = 0.04;
 static int in_calibration = 1; // this turns off alc, clipping et al
@@ -127,6 +130,9 @@ int get_rx_gain(void)
 	// printf("rx_gain %d\n", rx_gain);
 	return rx_gain;
 }
+static int cw_radio_owned;
+static int cw_saved_rx_hz;
+static int cw_rx_ui_volume;
 extern void check_r1_volume(); // Volume control normalization W2JON
 static int rx_vol;
 
@@ -210,11 +216,9 @@ void radio_tune_to(u_int32_t f)
 	// tx_shift_hz now derived from tx_shift (no longer hardcoded 24000 here)
 	double tx_shift_hz = tx_shift * (96000.0 / MAX_BINS);
 	u_int32_t shift_hz = (u_int32_t)(tx_shift_hz + 0.5); // round so 5351 gets integers
-	// read pitch via get_pitch() rather than using the rx_pitch global: that
-	// global's compiled-in default (700) didn't match the PITCH field's own
-	// starting value (600, see "rx_pitch" field def in sbitx_gtk.c) and only
-	// ever got reconciled once the operator first touched the PITCH control
-	int pitch = get_pitch();
+	// Preserve the existing UI path, including restored startup settings.
+	// A CW-owned transition uses its published snapshot, never GTK fields.
+	int pitch = cw_radio_owned ? rx_pitch : get_pitch();
 	if (rx_list->mode == MODE_CW)
 		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - shift_hz + TUNING_SHIFT - pitch);
 	else if (rx_list->mode == MODE_CWR)
@@ -226,10 +230,16 @@ void radio_tune_to(u_int32_t f)
 }
 long set_bfo_offset(int offset, long cur_freq)
 {
+    cw_runtime_cancel();
+    radio_control_lock();
+    radio_dsp_lock();
 	bfo_freq_runtime_offset += offset;
 	resetup_oscillators();
 	radio_tune_to(cur_freq);
-	return bfo_freq + bfo_freq_runtime_offset;
+    long result = bfo_freq + bfo_freq_runtime_offset;
+    radio_dsp_unlock();
+    radio_control_unlock();
+    return result;
 }
 int get_bfo_offset()
 {
@@ -2146,6 +2156,13 @@ void sound_process(
 	int32_t *output_speaker, int32_t *output_tx,
 	int n_samples)
 {
+    if (!radio_dsp_trylock()) {
+        memset(output_speaker, 0, n_samples * sizeof(*output_speaker));
+        memset(output_tx, 0, n_samples * sizeof(*output_tx));
+        return;
+    }
+    cw_audio_begin();
+
 	if (in_tx)
 	{
 		tx_process(input_rx, input_mic, output_speaker, output_tx, n_samples);
@@ -2159,6 +2176,7 @@ void sound_process(
 	{
 		wav_record(in_tx == 0 ? output_speaker : input_mic, n_samples);
 	}
+    radio_dsp_unlock();
 }
 
 // Existing set_rx_filter function
@@ -2598,8 +2616,9 @@ void tr_switch_v4(int tx_on) {
 	 	digitalWrite(LPF_E, LOW);
 		prev_lpf = -1;               // force LPF to be re-selected on next RX tune
     delay(5);
-    check_r1_volume();           // audio codec is back on
-    initialize_rx_vol();         // added to set volume after tx -W2JON W9JES KB2ML
+    if (cw_radio_owned)
+        rx_vol = (int)(log10(1 + 9 * cw_rx_ui_volume) * 100 / log10(1 + 900));
+    else { check_r1_volume(); initialize_rx_vol(); }
     sound_mixer(audio_card, "Master", rx_vol);
     sound_mixer(audio_card, "Capture", rx_gain);
     spectrum_reset();
@@ -2658,8 +2677,9 @@ void tr_switch_v2(int tx_on) {
     delay(5);
     digitalWrite(TX_LINE, LOW);  // use T/R switch to connect rcvr
     //digitalWrite(RX_LINE, HIGH);
-    check_r1_volume();           // audio codec is back on
-    initialize_rx_vol();         // added to set volume after tx -W2JON W9JES KB2ML
+    if (cw_radio_owned)
+        rx_vol = (int)(log10(1 + 9 * cw_rx_ui_volume) * 100 / log10(1 + 900));
+    else { check_r1_volume(); initialize_rx_vol(); }
     sound_mixer(audio_card, "Master", rx_vol);
     sound_mixer(audio_card, "Capture", rx_gain);
     spectrum_reset();
@@ -2760,7 +2780,7 @@ void setup()
 	delay(2000);
 	//	pf_debug = fopen("am_test.raw", "w");
 }
-void sdr_request(char *request, char *response)
+static void sdr_request_impl(char *request, char *response)
 {
 	char cmd[100], value[1000];
 
@@ -3014,4 +3034,64 @@ void sdr_request(char *request, char *response)
 
 	/* else
 		  printf("*Error request[%s] not accepted\n", request); */
+}
+
+int cw_radio_set(int on, const struct cw_config *c, unsigned e) {
+    radio_control_lock();
+    int result = 0;
+    if (on == 1) {
+        if (!cw_runtime_valid(e) || in_tx || !rx_list ||
+            rx_list->mode != c->radio_mode ||
+            (c->radio_mode != MODE_CW && c->radio_mode != MODE_CWR)) goto done;
+        radio_dsp_lock();
+        cw_radio_owned = 1;
+        cw_saved_rx_hz = c->rx_hz;
+        cw_rx_ui_volume = c->volume;
+        rx_pitch = c->pitch;
+        set_rx1(c->tx_hz); /* choose TX frequency before selecting its LPF */
+        tr_switch(1);     /* DSP is excluded until PA/relay setup has completed */
+        cw_ui_tx_state(1, c->radio_mode);
+        radio_dsp_unlock();
+        result = 1;
+    } else if (cw_radio_owned) {
+        radio_dsp_lock();
+        if (on == 0 && !cw_runtime_can_stop(e)) {
+            radio_dsp_unlock();
+            goto done;
+        }
+        cw_runtime_pause();
+        cw_rx_ui_volume = c->volume;
+        tr_switch(0);
+        set_rx1(cw_saved_rx_hz);
+        cw_ui_tx_state(0, c->radio_mode);
+        cw_radio_owned = 0;
+        radio_dsp_unlock();
+        result = 1;
+    } else result = 1;
+done:
+    radio_control_unlock();
+    return result;
+}
+
+void sdr_request(char *request, char *response) {
+    int mode_change = !strncmp(request, "r1:mode=", 8);
+    int tx_change = !strncmp(request, "tx=", 3);
+    int tuning_change = !strncmp(request, "r1:freq=", 8) || !strncmp(request, "rx_pitch=", 9);
+    if (mode_change) cw_runtime_disable();
+    else if (tx_change || tuning_change) cw_runtime_cancel();
+    radio_control_lock();
+    /* Release CW ownership before another mode/manual TX can take over. */
+    if ((mode_change || tx_change || tuning_change) && cw_radio_owned) {
+        struct cw_config c = { .radio_mode = rx_list->mode, .volume = cw_rx_ui_volume };
+        cw_radio_set(-1, &c, 0);
+    }
+    int calibration = !strncmp(request, "txcal=", 6);
+    int read_only = !strncmp(request, "stat:", 5);
+    int synchronize = !calibration && !read_only && (mode_change ||
+        (rx_list && (rx_list->mode == MODE_CW || rx_list->mode == MODE_CWR)));
+    /* Ordinary FT8/SSB commands retain their existing audio behavior. */
+    if (synchronize) radio_dsp_lock();
+    sdr_request_impl(request, response);
+    if (synchronize) radio_dsp_unlock();
+    radio_control_unlock();
 }

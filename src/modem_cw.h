@@ -11,3 +11,5 @@ void cw_set_pitch(int hz);
 #define INIT_TONE 600
 #define SAMPLING_FREQ 12000
 #define INIT_WPM 30 
+
+void cw_audio_begin(void);

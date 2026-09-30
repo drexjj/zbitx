@@ -35,6 +35,7 @@
 //   'Master' 0-100 controls the earphone volume only, line out remains unaffected
 //   'Input Mux' 1/0 take the input either from the Mic or Line In#include <stdio.h>
 
+#include "cw_runtime.h"
 #include <alsa/asoundlib.h>
 #include <pthread.h>
 #include <complex.h>
@@ -951,6 +952,11 @@ if (_loop_period_us > 15000) {
 		}
 	}
 	// End of new pcm play write routine
+    if (cw_runtime_enabled()) {
+        snd_pcm_sframes_t queued_frames;
+        if (snd_pcm_delay(pcm_play_handle, &queued_frames) == 0)
+            cw_runtime_playback_frames(queued_frames > 0 ? (unsigned)queued_frames : 0);
+    }
 
 #if DISABLE_LOOPBACK == 0
 
