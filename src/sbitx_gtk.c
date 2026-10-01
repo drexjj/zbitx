@@ -6098,6 +6098,7 @@ void rtc_sync()
 			  t_utc->tm_hour, t_utc->tm_min, t_utc->tm_sec);
 }
 
+int key_poll(int input_method) {
 // A mono plug grounds the ring for as long as it is in. A ring found
   // closed on the first poll is ignored until it opens, so a mono plug
   // (tip keys) and a stereo plug keying either contact both work.
