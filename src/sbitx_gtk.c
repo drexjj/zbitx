@@ -7081,7 +7081,7 @@ gboolean ui_tick(gpointer gook)
 
 		// update zbitx display much less often in CW or CWR modes
 		if (zbitx_mode == MODE_CW || zbitx_mode == MODE_CWR)
-			zbitx_poll_period = 500; // in CW/CWR (RX or TX): leave the GTK thread alone
+			zbitx_poll_period = 100; // in CW/CWR (RX or TX): leave the GTK thread alone
 
 		// Re-detect the front panel if it wasn't present (or has since reset).
 		// The original code probed the panel exactly once at startup; if the Pi
