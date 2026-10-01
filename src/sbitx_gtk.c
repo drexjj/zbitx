@@ -6098,24 +6098,30 @@ void rtc_sync()
 			  t_utc->tm_hour, t_utc->tm_min, t_utc->tm_sec);
 }
 
+// A mono plug grounds the ring for as long as it is in. A ring found
+  // closed on the first poll is ignored until it opens, so a mono plug
+  // (tip keys) and a stereo plug keying either contact both work.
+  static int ring_ignored = -1; // -1: not polled yet
+  int ring = digitalRead(PTT) == LOW;
+  if (ring_ignored < 0)
+    ring_ignored = ring;
+  else if (!ring)
+    ring_ignored = 0;
 
-
-int key_poll(int input_method) {
   int key = CW_IDLE;
 
   // Handle straight key input
   if (input_method == CW_STRAIGHT) {
-    if (digitalRead(DASH) == LOW) { // Modified to support mono straight key jacks - PA3CNO
+    if (digitalRead(DASH) == LOW || (ring && !ring_ignored))
       key = CW_DOWN;
-    }
-  } 
+  }
   // Handle paddle input
-  else {  
-    if (digitalRead(PTT) == LOW) key |= CW_DASH;
-    if (digitalRead(DASH) == LOW) key |= CW_DOT; 
+  else {
+    if (ring) key |= CW_DASH;
+    if (digitalRead(DASH) == LOW) key |= CW_DOT;
     if (key == (CW_DASH | CW_DOT))
       key = CW_SQUEEZE;  // key has dash AND dot bits set
-    }
+  }
   return key;
 }
 
