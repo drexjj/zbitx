@@ -228,7 +228,7 @@ struct cw_decoder decoder;
 // Blackman-Harris envelope table (480 samples, 0.0 → 1.0 rise) 5 ms at 96000 samples per sec
 // values generated in off-line spreadsheet
 #define CW_ENVELOPE_LEN 480
-static const float cw_envelope_data[CW_ENVELOPE_LEN] = {
+static const float cw_envelope_data[] = {
   0.0f, 0.000001822646818f, 0.000004862928747f, 0.000009124651631f, 0.00001461314364f,
   0.00002133525526f, 0.00002929935926f, 0.00003851535071f, 0.00004899464693f, 0.00006075018742f,
   0.00007379643391f, 0.00008814937022f, 0.0001038265022f, 0.0001208468579f, 0.000139230987f,
@@ -324,8 +324,11 @@ static const float cw_envelope_data[CW_ENVELOPE_LEN] = {
   0.9915285314f,    0.9924171538f,    0.9932570792f,    0.994048193f,     0.9947903872f,
   0.9954835604f,    0.9961276181f,    0.9967224722f,    0.9972680415f,    0.9977642513f,
   0.9982110337f,    0.9986083278f,    0.9989560792f,    0.9992542402f,    0.9995027701f,
-  0.9997016348f,    0.9998508072f,    0.9999502668f,    1.0f
+  0.9997016348f,    0.9998508072f,    0.9999502668f,    1.0f, 1.0f
 };
+/* Keep the 480-sample timing; an omitted final value must never become zero. */
+_Static_assert(sizeof(cw_envelope_data) / sizeof(cw_envelope_data[0]) == CW_ENVELOPE_LEN,
+               "CW envelope must contain exactly 480 explicit samples");
 
 // cw tx state variables
 static atomic_int init_requested = 1;
