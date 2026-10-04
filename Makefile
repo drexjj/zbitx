@@ -20,7 +20,7 @@ VERSION := $(shell grep VER src/sdr_ui.h | awk 'FNR==1{print $$4}' | sed -e 's/"
 COMMON_SRC := \
 	src/vfo.c src/sbitx_sound.c src/fft_filter.c src/sbitx_gtk.c src/sbitx_utils.c \
 	src/i2c.c src/si5351v2.c src/ini.c src/hamlib.c src/queue.c src/modems.c src/logbook.c \
-	src/modem_cw.c src/settings_ui.c src/hist_disp.c src/ntputil.c \
+	src/modem_cw.c src/cw_runtime.c src/radio_control.c src/settings_ui.c src/hist_disp.c src/ntputil.c \
 	src/telnet.c src/macros.c src/modem_ft8.c src/remote.c src/mongoose.c src/para_eq.c \
 	src/webserver.c src/eq_ui.c src/wifi_panel.c
 
