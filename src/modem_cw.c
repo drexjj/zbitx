@@ -12,11 +12,9 @@
 	The cw_get_sample() is also called from the thread that does DSP, so stalling
 	it is dangerous.
 
-	The modem_poll is called about 10 to 20 times a second from 
-	the 'user interface' thread.
+	CW GPIO input and TX control run independently of the UI (cw_runtime.c).
 
-	The key is physically read from the GPIO by calling key_poll() through
-	modem_poll and the value is stored as cw_key_state.
+	The GPIO worker timestamps transitions and queues them for the audio thread.
 
 	The cw_get_sample just reads this cw_key_state instead of polling the GPIO.
 
@@ -69,6 +67,9 @@
 	threshold between the signal and the noisefloor. 
 	
 */
+#ifdef CW_UNIT_TEST
+#include "cw_test_support.h"
+#else
 #include <stdio.h>
 #include <sys/time.h>   //added to support debug timing code
 #include <stdlib.h>
@@ -88,6 +89,9 @@
 #include "sdr_ui.h"
 #include "modem_cw.h"
 #include "sound.h"
+#endif
+#include "cw_runtime.h"
+#include <stdatomic.h>
 
 struct morse_tx {
 	char c;
@@ -224,7 +228,7 @@ struct cw_decoder decoder;
 // Blackman-Harris envelope table (480 samples, 0.0 → 1.0 rise) 5 ms at 96000 samples per sec
 // values generated in off-line spreadsheet
 #define CW_ENVELOPE_LEN 480
-static const float cw_envelope_data[CW_ENVELOPE_LEN] = {
+static const float cw_envelope_data[] = {
   0.0f, 0.000001822646818f, 0.000004862928747f, 0.000009124651631f, 0.00001461314364f,
   0.00002133525526f, 0.00002929935926f, 0.00003851535071f, 0.00004899464693f, 0.00006075018742f,
   0.00007379643391f, 0.00008814937022f, 0.0001038265022f, 0.0001208468579f, 0.000139230987f,
@@ -320,27 +324,32 @@ static const float cw_envelope_data[CW_ENVELOPE_LEN] = {
   0.9915285314f,    0.9924171538f,    0.9932570792f,    0.994048193f,     0.9947903872f,
   0.9954835604f,    0.9961276181f,    0.9967224722f,    0.9972680415f,    0.9977642513f,
   0.9982110337f,    0.9986083278f,    0.9989560792f,    0.9992542402f,    0.9995027701f,
-  0.9997016348f,    0.9998508072f,    0.9999502668f,    1.0f
+  0.9997016348f,    0.9998508072f,    0.9999502668f,    1.0f, 1.0f
 };
+/* Keep the 480-sample timing; an omitted final value must never become zero. */
+_Static_assert(sizeof(cw_envelope_data) / sizeof(cw_envelope_data[0]) == CW_ENVELOPE_LEN,
+               "CW envelope must contain exactly 480 explicit samples");
 
 // cw tx state variables
-static unsigned long millis_now = 0;
+static atomic_int init_requested = 1;
+static int cw_block_ready;
 
 static int cw_key_state = 0;
 static int cw_period;
-static int cw_delay_ms = 300;
+
 static struct vfo cw_tone;          // cw_env removed, now using data-driven envelope
 static int keydown_count = 0;
 static int keyup_count = 0;
 static float cw_envelope = 0.0f;   // current envelope amplitude
 static int cw_envelope_pos = 0;    // position within cw_envelope_data[]
-static int cw_tx_until = 0;        // delay switching to rx, expect more txing
+
 static int data_tx_until = 0;
-static int cached_pitch = 0;       // seeded in cw_init() to avoid a spurious
+static atomic_int cached_pitch = 600;       // seeded in cw_init() to avoid a spurious
                                     // 0 Hz retune on the very first idle sample
 
 static char *symbol_next = NULL;
 
+static uint8_t cw_next_symbol_flag = 0;
 static uint8_t cw_current_symbol = CW_IDLE;
 static uint8_t cw_next_symbol = CW_IDLE;
 static uint8_t cw_last_symbol = CW_IDLE;
@@ -348,6 +357,31 @@ static uint8_t cw_mode = CW_STRAIGHT;
 static int cw_bytes_available = 0; //chars available in the tx queue
 #define CW_MAX_SYMBOLS 12
 char cw_key_letter[CW_MAX_SYMBOLS];
+
+/* UI -> audio text and audio -> UI echo, both single producer/consumer. */
+#define CW_TEXT_SIZE 1024u
+static struct { char c; unsigned epoch; } text_queue[CW_TEXT_SIZE];
+static char echo_queue[CW_TEXT_SIZE];
+static atomic_uint text_write, text_read, echo_write, echo_read;
+static unsigned audio_epoch;
+static int text_count(void) { return atomic_load(&text_write) - atomic_load(&text_read); }
+static int text_pop(char *c) {
+    unsigned r = atomic_load(&text_read);
+    unsigned w = atomic_load(&text_write);
+    while (r != w) {
+        unsigned e = text_queue[r % CW_TEXT_SIZE].epoch;
+        *c = text_queue[r % CW_TEXT_SIZE].c;
+        atomic_store(&text_read, ++r);
+        if (e == audio_epoch) return 1;
+    }
+    return 0;
+}
+static void echo_push(char c) {
+    unsigned w = atomic_load(&echo_write), r = atomic_load(&echo_read);
+    if (w - r == CW_TEXT_SIZE) return; /* display only: never block audio */
+    echo_queue[w % CW_TEXT_SIZE] = c;
+    atomic_store(&echo_write, w + 1);
+}
 
 // called when the PITCH control changes
 // Writing cached_pitch here means it's already correct by the time TX starts
@@ -404,7 +438,7 @@ static int cw_read_key(){
 	if (cw_bytes_available == 0)
 		return CW_IDLE;
 
-	get_tx_data_byte(&c);
+	if (!text_pop(&c)) return CW_IDLE;
 	symbol_next = morse_tx_table->code; // point to the first symbol, by default
 
 	for (int i = 0; i < sizeof(morse_tx_table)/sizeof(struct morse_tx); i++)
@@ -413,7 +447,7 @@ static int cw_read_key(){
 			char buff[5];
 			buff[0] = toupper(c);
 			buff[1] = 0;
-			write_console(FONT_CW_TX, buff);
+			echo_push(buff[0]);
 		}
 	if (symbol_next)
 		return cw_get_next_symbol(); 
@@ -431,17 +465,12 @@ float cw_tx_get_sample() {
   uint8_t state_machine_mode;
   static uint8_t symbol_now = CW_IDLE;
 	
-  static int pitch_poll_counter = 0;
-  if ((keydown_count == 0) && (keyup_count == 0)) {
-    millis_now = millis();
-    if (++pitch_poll_counter >= 2000) {   // ~20ms at 96kHz -- plenty responsive for a pitch control
-        pitch_poll_counter = 0;
-        cached_pitch = get_pitch();
-    }
-    if (cw_tone.freq_hz != cached_pitch)
-      vfo_start( &cw_tone, cached_pitch, 0);
-  }
-  
+  if (!cw_block_ready || !cw_runtime_ready()) return 0;
+  cw_key_state = cw_runtime_sample();
+  cw_bytes_available = text_count();
+  if (cw_tone.freq_hz != atomic_load(&cached_pitch))
+      vfo_start(&cw_tone, atomic_load(&cached_pitch), 0);
+
   // check to see if input available from macro or keyboard
   if ((cw_bytes_available > 0) || (symbol_next != NULL)) {
     state_machine_mode = CW_KBD;
@@ -451,8 +480,9 @@ float cw_tx_get_sample() {
   
   // iambic modes require polling key during keydown/keyup
   // other modes only check when idle
-  if (((state_machine_mode == CW_STRAIGHT || 
-        state_machine_mode == CW_BUG ||
+  if (state_machine_mode == CW_STRAIGHT ||
+      (state_machine_mode == CW_BUG && cw_current_symbol == CW_DASH) ||
+      ((state_machine_mode == CW_BUG ||
         state_machine_mode == CW_ULTIMATIC || 
         state_machine_mode == CW_KBD) && 
         (keydown_count == 0 && keyup_count == 0))
@@ -472,28 +502,17 @@ float cw_tx_get_sample() {
       else
           cw_envelope = 1.0f;
       keydown_count--;
-  } else if (keyup_count > 0) {
-      if (cw_envelope_pos > 0) {
+  } else {
+      if (cw_envelope_pos > 0)
           cw_envelope = cw_envelope_data[--cw_envelope_pos];
-          if (cw_envelope_pos == 0)
-              keyup_count--;
-      } else {
+      else
           cw_envelope = 0.0f;
-          keyup_count--;
-      }
+      if (keyup_count > 0) keyup_count--;
   }
   sample = ((vfo_read(&cw_tone) / FLOAT_SCALE) * cw_envelope) / 8;
   
-  // keep extending 'cw_tx_until' while we're sending
-  if ((symbol_now == CW_DOWN) || (symbol_now == CW_DOT) ||
-      (symbol_now == CW_DASH) || (symbol_now == CW_SQUEEZE) ||
-      (keydown_count > 0))
-    cw_tx_until = millis_now + cw_delay_ms;
-  // if macro or keyboard characters remain in the buffer
-  // prevent switching from xmit to rcv and cutting off macro
-  if (cw_bytes_available != 0)
-    cw_tx_until = millis_now + 1000;
-
+  cw_runtime_busy(cw_key_state || keydown_count || keyup_count ||
+                  cw_envelope_pos || symbol_next || text_count() || cw_next_symbol_flag);
   return sample;
 }
 
@@ -502,7 +521,7 @@ float cw_tx_get_sample() {
 // State machine uses mode, current state and input to determine keydown_count
 // and keyup_count needed to key transmitter.
 void handle_cw_state_machine(uint8_t state_machine_mode, uint8_t symbol_now) {
-  static uint8_t cw_next_symbol_flag = 0;  // used in iambic modes
+
   // printf("state_machine_mode %d\n", state_machine_mode);
   // printf("cw_current_symbol %d\n", cw_current_symbol);
   // printf("symbol_now %d\n", symbol_now);
@@ -510,13 +529,13 @@ void handle_cw_state_machine(uint8_t state_machine_mode, uint8_t symbol_now) {
   case CW_STRAIGHT:
     if (symbol_now == CW_IDLE) {
       if (cw_current_symbol == CW_DOWN) {
-        keyup_count = cw_envelope_pos;  // ramp down from wherever we are
+        keyup_count = 0;  // envelope falls independently; allow immediate re-key
         keydown_count = 0;
       }
       cw_current_symbol = CW_IDLE;
     }
     if (symbol_now == CW_DOWN) {
-      keydown_count = CW_ENVELOPE_LEN; // enough samples to fully ramp up
+      keydown_count = 1; // re-evaluate the straight contact on every sample
       keyup_count = 0;
       cw_current_symbol = CW_DOWN;
     }
@@ -561,7 +580,7 @@ void handle_cw_state_machine(uint8_t state_machine_mode, uint8_t symbol_now) {
       break; // exit CW_DOT case
     case CW_DASH:
       if (symbol_now == CW_IDLE) {
-		keyup_count = cw_envelope_pos;  // ramp down from wherever we are
+		keyup_count = 0;  // envelope falls independently; allow immediate re-key
         keydown_count = 0;
         cw_current_symbol = CW_IDLE;
       }
@@ -678,6 +697,12 @@ void handle_cw_state_machine(uint8_t state_machine_mode, uint8_t symbol_now) {
     // aka iambic A
     // the keyer stops sending the current bit when you release the paddles
     
+    /* Mode A finishes the current element when a squeeze is released.
+     * Mode B intentionally keeps the pending opposite element below. */
+    if (symbol_now == CW_IDLE && cw_current_symbol == CW_SQUEEZE) {
+        cw_next_symbol_flag = 0;
+        cw_current_symbol = CW_IDLE;
+    }
     // before checking new paddle input, look for a symbol ready to go
     // don't act on anything else until it is cleared
     if (cw_next_symbol_flag == 1) {
@@ -1320,7 +1345,7 @@ void cw_rx(int32_t *samples, int count){
 	 For those transmitting at higher than 40 wpm, .. some other day
 */
 
-void cw_init(){	
+static void cw_init_audio(){	
 	//cw rx initializeation
 	decoder.ticker = 0;
 	decoder.n_bins = N_BINS;
@@ -1340,7 +1365,7 @@ void cw_init(){
 	cw_rx_bin_init(&decoder.signal, INIT_TONE, N_BINS, SAMPLING_FREQ);
 	
 	//init cw tx with some reasonable values
-	cached_pitch = get_pitch();   // seed before first vfo_start so cw_tx_get_sample()
+	/* Pitch was published by the UI, never looked up on this thread. */   // seed before first vfo_start so cw_tx_get_sample()
 	                              // doesn't see a stale 0 Hz cached_pitch and
 	                              // retune to silence before the pitch is first polled
 	vfo_start(&cw_tone, cached_pitch, 0);
@@ -1352,52 +1377,62 @@ void cw_init(){
 	cw_envelope_pos = 0;
 }
 
-// WPM, PITCH, CW_DELAY and the keyer input method are operator-set values
-// Refresh them on a slower cadence (FIELD_POLL_PERIOD ms) and cache them
-#define FIELD_POLL_PERIOD 20
-void cw_poll(int bytes_available, int tx_is_on){
-	static int field_poll_ticks = 0;
-	static int wpm = 12;
-	static int cached_input_method = CW_IAMBIC;
-
-	cw_bytes_available = bytes_available;
-
-	if (field_poll_ticks == 0) {
-		wpm = field_int("WPM");
-		cw_delay_ms = get_cw_delay();
-		cached_input_method = get_cw_input_method();
-
-		//retune the rx pitch if needed
-		int cw_rx_pitch = field_int("PITCH");
-		if (cw_rx_pitch != decoder.signal.freq)
-			cw_rx_bin_init(&decoder.signal, cw_rx_pitch, N_BINS, SAMPLING_FREQ);
-
-		// check if the wpm has changed
-		if (wpm != decoder.wpm){
-			decoder.wpm = wpm;
-			decoder.dash_len = (18 * SAMPLING_FREQ) / (5 * N_BINS* wpm);
-		}
-	}
-	field_poll_ticks = (field_poll_ticks + 1) % FIELD_POLL_PERIOD;
-
-	cw_key_state = key_poll(cached_input_method);
-	cw_period = (12 * 9600)/wpm;
-
-	// TX ON if bytes are avaiable (from macro/keyboard) or key is pressed
-	// of we are in the middle of symbol (dah/dit) transmission 
-	
-	if (!tx_is_on && (cw_bytes_available || cw_key_state || (symbol_next && *symbol_next)) > 0){
-		tx_on(TX_SOFT);
-		millis_now = millis();
-		cw_tx_until = cw_delay_ms + millis_now;
-		cw_mode = cached_input_method;
-	}
-	else if (tx_is_on && cw_tx_until < millis_now){
-			tx_off();
-	}
+/* Called exactly once per sound block, in RX as well as TX. */
+void cw_audio_begin(void) {
+    static struct cw_config c = { .wpm = 12, .pitch = 600 };
+    int reset = cw_runtime_begin(&c);
+    cw_block_ready = reset >= 0;
+    if (!cw_block_ready) return;
+    audio_epoch = cw_runtime_epoch();
+    int initialize = atomic_exchange(&init_requested, 0);
+    if (reset || initialize) {
+        cw_init_audio();
+        cw_current_symbol = cw_next_symbol = cw_last_symbol = CW_IDLE;
+        cw_next_symbol_flag = 0;
+        symbol_next = NULL;
+        cw_key_state = 0;
+    }
+    unsigned r = atomic_load(&text_read), w = atomic_load(&text_write);
+    while (r != w && text_queue[r % CW_TEXT_SIZE].epoch != audio_epoch)
+        atomic_store(&text_read, ++r);
+    cw_mode = c.input_method;
+    cw_period = (12 * 9600) / (c.wpm > 0 ? c.wpm : 12);
+    atomic_store(&cached_pitch, c.pitch);
+    if (decoder.signal.freq != c.pitch)
+        cw_rx_bin_init(&decoder.signal, c.pitch, N_BINS, SAMPLING_FREQ);
+    if (decoder.wpm != c.wpm && c.wpm > 0) {
+        decoder.wpm = c.wpm;
+        decoder.dash_len = (18 * SAMPLING_FREQ) / (5 * N_BINS * c.wpm);
+    }
 }
-
-void cw_abort(){
-	//flush all the tx text buffer
-  //actually does nothing
+void cw_init(void) {
+    atomic_store(&init_requested, 1);
+    cw_runtime_cancel();
+}
+void cw_poll(int bytes_available, int tx_is_on) {
+    (void)tx_is_on;
+    struct cw_config c;
+    cw_ui_config(&c);
+    cw_runtime_configure(&c);
+    /* Move text on the UI thread; sample generation must not edit UI fields. */
+    unsigned w = atomic_load(&text_write), r = atomic_load(&text_read);
+    char ch;
+    for (int i = 0; i < 64 && w - r < CW_TEXT_SIZE; ++i) {
+        if (!get_tx_data_byte(&ch)) break;
+        text_queue[w % CW_TEXT_SIZE].c = ch;
+        text_queue[w % CW_TEXT_SIZE].epoch = cw_runtime_epoch();
+        atomic_store(&text_write, ++w);
+    }
+    /* get_tx_data_byte() intentionally waits for a non-voice TX mode.
+     * Request TX from the UI count too, to bootstrap text after SSB. */
+    cw_runtime_text(text_count() || bytes_available > 0);
+    unsigned er = atomic_load(&echo_read), ew = atomic_load(&echo_write);
+    while (er != ew) {
+        char buff[2] = { echo_queue[er % CW_TEXT_SIZE], 0 };
+        atomic_store(&echo_read, ++er);
+        write_console(FONT_CW_TX, buff);
+    }
+}
+void cw_abort(void) {
+    cw_runtime_cancel();
 }
