@@ -1,3 +1,11 @@
+# v5.13
+- Modified CW handler which now stores key events in buffer - thanks PA3CNO!
+- Increase waterfall speed for CW mode
+
+# v5.12
+- Modified how saved settings are stored and recalled for better usability
+- Requires v5.14f front panel firmware.
+
 # v5.11
 - Added automatic PA hardware calibration function (see Toolbox for new app)
 - Changed the SSL certificate to zbitx.local
