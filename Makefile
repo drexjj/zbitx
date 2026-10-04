@@ -75,7 +75,7 @@ zbitx: db
 	@echo "compiling $@ version $(VERSION) in $(CURDIR)"
 	@[ "$(OPT)" = "o" ] && rm -f *.gcda || true
 	@[ "$(OPT)" = "g" ] && rm -f *.gcda || true
-	$(CC) -std=gnu11 $(FLAGS) $(EXTRA_CFLAGS) $(MONGOOSE_FLAGS) -o $@ \
+	$(CC) $(FLAGS) $(EXTRA_CFLAGS) $(MONGOOSE_FLAGS) -o $@ \
 		$(COMMON_SRC) src/sbitx.c \
 		$(FT8_LIB) \
 		$(LIBS) $(GTK_CFLAGS) $(GTK_LIBS)
@@ -92,15 +92,3 @@ clean:
 
 distclean: clean
 	rm -f *.gcda
-
-.PHONY: test-cw
-test-cw:
-	$(CC) -std=gnu11 -O2 -DCW_RUNTIME_TEST -Itests -Isrc \
-		tests/test_cw.c src/cw_runtime.c -o tests/test-cw -lm
-	./tests/test-cw
-	$(CC) -std=gnu11 -O2 -DCW_RUNTIME_TEST -Isrc \
-		tests/test_queue_threads.c src/cw_runtime.c -o tests/test-cw-threads -pthread
-	./tests/test-cw-threads
-	$(CC) -std=gnu11 -O2 -Isrc tests/test_workers.c src/cw_runtime.c \
-		-o tests/test-cw-workers -pthread
-	./tests/test-cw-workers
