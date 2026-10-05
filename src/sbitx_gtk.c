@@ -1,3 +1,4 @@
+#include "cw_runtime.h"
 /*
 The initial sync between the gui values, the core radio values, settings, et al are manually set.
 */
@@ -473,9 +474,10 @@ static struct field *f_last_text = NULL;
 
 // variables to power up and down the tx
 
-static int in_tx = TX_OFF;
+static atomic_int in_tx = TX_OFF;
+static volatile sig_atomic_t termination_requested;
 static int key_down = 0;
-static int tx_start_time = 0;
+static atomic_int tx_start_time = 0;
 
 static int *tx_mod_buff = NULL;
 static int tx_mod_index = 0;
@@ -488,7 +490,7 @@ char *mode_name[MAX_MODES] = {
 static int serial_fd = -1;
 static int xit = 512;
 static long int tuning_step = 1000;
-static int tx_mode = MODE_USB;
+static atomic_int tx_mode = MODE_USB;
 
 #define BAND80M 0
 #define BAND60M 1
@@ -533,9 +535,9 @@ int data_delay = 700;
 
 int spectrum_span = 48000;
 extern int spectrum_plot[];
-extern int fwdpower, vswr;
+extern atomic_int fwdpower, vswr;
 extern int vbatt_raw;   /* raw battery integer from RP2040 front panel */
-extern int fwdpower_calc, fwdpower_cnt;  /* peak-hold state for power display */
+extern atomic_int fwdpower_calc, fwdpower_cnt;  /* shared peak-hold state */
 
 /* Battery voltage calibration.
  * The RP2040 sends: vbatt_raw = (500 * analogRead(A2)) / 278
@@ -601,6 +603,7 @@ int current_layout = LAYOUT_KBD;
 
 // the cmd fields that have '#' are not to be sent to the sdr
 struct field main_controls[] = {
+
 
 	// Band stack position Option ON/OFF (hides/reveals band stack position)
 	{"#band_stack_pos_option", do_toggle_option, 1000, -1000, 40, 40, "BSTACKPOSOPT", 40, "OFF", FIELD_TOGGLE, FONT_FIELD_VALUE,
@@ -1064,6 +1067,8 @@ int last_log = 0;
 
 struct field *get_field(const char *cmd)
 {
+	if (!active_layout || !cmd)
+		return NULL;
 	for (int i = 0; active_layout[i].cmd[0] > 0; i++)
 		if (!strcmp(active_layout[i].cmd, cmd))
 			return active_layout + i;
@@ -2476,6 +2481,10 @@ void draw_spectrum(struct field *f_spectrum, cairo_t *gfx)
 	long freq, freq_div;
 	char freq_text[20];
 
+	struct field *mode_f = get_field("r1:mode");
+	if (!mode_f)
+		return;
+
 	if (in_tx)
 	{
 		// If TX panafall is disabled, always draw modulation regardless of mode
@@ -2486,7 +2495,6 @@ void draw_spectrum(struct field *f_spectrum, cairo_t *gfx)
 		}
 		
 		// Otherwise, only draw modulation for modes other than USB/LSB/AM
-		struct field *mode_f = get_field("r1:mode");
 		if (strcmp(mode_f->value, "USB") != 0 && strcmp(mode_f->value, "LSB") != 0 && strcmp(mode_f->value, "AM") != 0)
 		{
 			draw_modulation(f_spectrum, gfx);
@@ -2497,7 +2505,6 @@ void draw_spectrum(struct field *f_spectrum, cairo_t *gfx)
 
 	pitch = field_int("PITCH");
 	tx_pitch = field_int("TX_PITCH");
-	struct field *mode_f = get_field("r1:mode");
 	freq = atol(get_field("r1:freq")->value);
 
 	span = atof(get_field("#span")->value);
@@ -5293,15 +5300,15 @@ void tx_on(int trigger)
 		return;
 	}
 
-	// Persist settings at every transmit. Keying up is a natural checkpoint:
-	// the operator has settled on frequency/band/mode/power, and a forced save
-	// here guarantees those are written to user_settings.ini even if the app is
-	// later killed (SIGKILL/SIGTERM bypass the normal shutdown save). forced=1
-	// ignores the periodic throttle, and save_user_settings() only actually
-	// writes when something changed, so this is cheap on repeated keying.
-	save_user_settings(1);
-
 	struct field *f = get_field("r1:mode");
+    if (f && (!strcmp(f->value, "CW") || !strcmp(f->value, "CWR"))) {
+        struct cw_config c;
+        cw_ui_config(&c);
+        cw_runtime_configure(&c);
+        cw_runtime_request_tx();
+        return;
+    }
+    save_user_settings(1); /* preserve existing non-CW persistence */
 	if (f)
 	{
 		if (!strcmp(f->value, "CW"))
@@ -6091,24 +6098,31 @@ void rtc_sync()
 			  t_utc->tm_hour, t_utc->tm_min, t_utc->tm_sec);
 }
 
-
-
 int key_poll(int input_method) {
+// A mono plug grounds the ring for as long as it is in. A ring found
+  // closed on the first poll is ignored until it opens, so a mono plug
+  // (tip keys) and a stereo plug keying either contact both work.
+  static int ring_ignored = -1; // -1: not polled yet
+  int ring = digitalRead(PTT) == LOW;
+  if (ring_ignored < 0)
+    ring_ignored = ring;
+  else if (!ring)
+    ring_ignored = 0;
+
   int key = CW_IDLE;
 
   // Handle straight key input
   if (input_method == CW_STRAIGHT) {
-    if ((digitalRead(PTT) == LOW) || (digitalRead(DASH) == LOW)) {
+    if (digitalRead(DASH) == LOW || (ring && !ring_ignored))
       key = CW_DOWN;
-    }
-  } 
+  }
   // Handle paddle input
-  else {  
-    if (digitalRead(PTT) == LOW) key |= CW_DASH;
-    if (digitalRead(DASH) == LOW) key |= CW_DOT; 
+  else {
+    if (ring) key |= CW_DASH;
+    if (digitalRead(DASH) == LOW) key |= CW_DOT;
     if (key == (CW_DASH | CW_DOT))
       key = CW_SQUEEZE;  // key has dash AND dot bits set
-    }
+  }
   return key;
 }
 
@@ -6612,7 +6626,6 @@ void zbitx_poll(int all){
 					delay(3);
 					printf("Retrying I2C %d\n", retry);
 				}while(retry--);
-				f->update_remote = 0;
 				count++;
 				delay(10);
 			}
@@ -6687,20 +6700,23 @@ void zbitx_poll(int all){
 						matched++;
 					} else if (!strcmp(key, "power")) {
 						int raw = atoi(val);
-						/* The RP2040's vfwd is in units of 0.1 W — the same scale used
-						 * by smeter_draw() on the RP2040 display (sprintf "%d W", vfwd/10).
-						 * Do NOT apply the old ATtiny85 bridge/quadratic formula here;
-						 * just pass vfwd straight through as fwdpower.
-						 * draw_tx_meters() already divides fwdpower by 10 to get watts. */
+						 * fwdpower_calc = peak in the current window
+						 * fwdpower_cnt  = millis() when the window started
+						 *                 (0 = just reset by tr_switch()/tx_off()/
+						 *                 PA calibration, start a new window) */
+						#define FWDPOWER_WINDOW_MS 500
+						int now_ms = (int)millis() | 1; // never 0, 0 means "reset"
 						if (raw > fwdpower_calc)
 							fwdpower_calc = raw;
-						if (!fwdpower_cnt) {
+						if (raw > fwdpower)
+							fwdpower = raw;
+						if (!fwdpower_cnt)
+							fwdpower_cnt = now_ms;
+						else if (now_ms - fwdpower_cnt >= FWDPOWER_WINDOW_MS) {
 							fwdpower = fwdpower_calc;
 							fwdpower_calc = raw;
+							fwdpower_cnt = now_ms;
 						}
-						if (!fwdpower)
-							fwdpower = raw;
-						fwdpower_cnt = (fwdpower_cnt + 1) % 100;
 						matched++;
 					} else if (!strcmp(key, "vswr")) {
 						vswr = atoi(val);
@@ -6978,6 +6994,7 @@ void handleButton2Press()
 
 gboolean ui_tick(gpointer gook)
 {
+    if (termination_requested) exit(0); /* join workers outside the signal handler */
 	int static ticks = 0;
 
 	ticks++;
@@ -7066,7 +7083,7 @@ gboolean ui_tick(gpointer gook)
 
 		// update zbitx display much less often in CW or CWR modes
 		if (zbitx_mode == MODE_CW || zbitx_mode == MODE_CWR)
-			zbitx_poll_period = 500; // in CW/CWR (RX or TX): leave the GTK thread alone
+			zbitx_poll_period = 100; // in CW/CWR (RX or TX): leave the GTK thread alone
 
 		// Re-detect the front panel if it wasn't present (or has since reset).
 		// The original code probed the panel exactly once at startup; if the Pi
@@ -7167,7 +7184,7 @@ gboolean ui_tick(gpointer gook)
 				set_field("#fwdpower", buff);
 			sprintf(buff, "%d", in_tx ? vswr : 10);  /* 10 = SWR 1.0 when RX */
 			if (strcmp(get_field("#vswr")->value, buff))
-+				set_field("#vswr", buff);
+				set_field("#vswr", buff);
 		}
 		if (layout_needs_refresh)
 		{
@@ -7369,6 +7386,46 @@ int get_tx_data_length()
 		return strlen(get_field("#text_in")->value);
 	else
 		return 0;
+}
+
+void cw_ui_tx_state(int on, int mode) {
+    atomic_store(&tx_mode, mode);
+    atomic_store(&in_tx, on ? TX_SOFT : TX_OFF);
+    if (on) atomic_store(&tx_start_time, millis());
+}
+void cw_ui_config(struct cw_config *c) {
+    memset(c, 0, sizeof(*c));
+    struct field *mode = get_field("r1:mode");
+    struct field *volume = get_field("r1:volume");
+    struct field *freq = get_field("r1:freq");
+    struct field *rit = get_field("#rit");
+    struct field *delta = get_field("#rit_delta");
+    struct field *split = get_field("#split");
+    struct field *vfo_a = get_field("#vfo_a_freq");
+    struct field *vfo_b = get_field("#vfo_b_freq");
+    struct field *input = get_field("#cwinput");
+    struct field *wpm = get_field("#tx_wpm");
+    struct field *pitch = get_field("rx_pitch");
+    struct field *delay = get_field("#cwdelay");
+    /* Leave CW disabled if the layout cannot provide a complete snapshot. */
+    if (!mode || !volume || !freq || !rit || !delta || !split ||
+        !vfo_a || !vfo_b || !input || !wpm || !pitch || !delay)
+        return;
+    c->radio_mode = mode_id(mode->value);
+    c->enabled = c->radio_mode == MODE_CW || c->radio_mode == MODE_CWR;
+    c->input_method = get_cw_input_method();
+    c->wpm = atoi(wpm->value);
+    c->pitch = atoi(pitch->value);
+    c->hang_ms = atoi(delay->value);
+    c->volume = atoi(volume->value);
+    int dial = atoi(freq->value);
+    c->rx_hz = c->tx_hz = dial;
+    if (!strcmp(rit->value, "ON"))
+        c->rx_hz += atoi(delta->value);
+    else if (!strcmp(split->value, "ON")) {
+        c->rx_hz = atoi(vfo_a->value);
+        c->tx_hz = atoi(vfo_b->value);
+    }
 }
 
 int is_in_tx()
@@ -8047,7 +8104,10 @@ void initialize_macro_selection() {
 void cmd_exec(char *cmd)
 {
 	int i, j;
-	int mode = mode_id(get_field("r1:mode")->value);
+	struct field *mode_f = get_field("r1:mode");
+	if (!cmd || !mode_f)
+		return;
+	int mode = mode_id(mode_f->value);
 
 	char args[MAX_FIELD_LENGTH];
 	char exec[20];
@@ -8072,7 +8132,7 @@ void cmd_exec(char *cmd)
 	}
 	args[++j] = 0;
 
-	char response[100];
+	char response[MAX_FIELD_LENGTH + 64];
 
 	if (!strcmp(exec, "FT8"))
 	{
@@ -8080,8 +8140,14 @@ void cmd_exec(char *cmd)
 	}
 	else if (!strcmp(exec, "callsign"))
 	{
-		strcpy(get_field("#mycallsign")->value, args);
-		sprintf(response, "\n[Your callsign is set to %s]\n", get_field("#mycallsign")->value);
+		struct field *callsign = get_field("#mycallsign");
+		if (!callsign)
+		{
+			write_console(FONT_LOG, "\n[Callsign field unavailable]\n");
+			return;
+		}
+		snprintf(callsign->value, sizeof(callsign->value), "%s", args);
+		snprintf(response, sizeof(response), "\n[Your callsign is set to %s]\n", callsign->value);
 		write_console(FONT_LOG, response);
 	}
 	else if (!strcmp(exec, "metercal"))
@@ -8785,6 +8851,13 @@ int main(int argc, char *argv[])
 	// moved initialization up ahead of the first time it gets checked
 	//initialize_macro_selection();
 
+    int cw_error = cw_runtime_start();
+    if (cw_error) {
+        fprintf(stderr, "Cannot start CW workers: %s\n", strerror(cw_error));
+        return 1;
+    }
+    atexit(cw_runtime_stop);
+
 	// Register a function to be called when the application exits
 	atexit(cleanup_on_exit);
 
@@ -8806,6 +8879,7 @@ int main(int argc, char *argv[])
 
 // Function to clean up resources when the application exits
 void cleanup_on_exit() {
+    cw_runtime_stop();
 	// Persist settings on the way out. This runs for any normal exit() and,
 	// with the SIGINT/SIGTERM handler installed in main(), for the usual
 	// `kill`/Ctrl-C the operator uses to stop the app. (SIGKILL / -9 still
@@ -8822,5 +8896,5 @@ void cleanup_on_exit() {
 // why killing the app lost unsaved settings.
 static void term_handler(int signum) {
 	(void)signum;
-	exit(0);
+    termination_requested = 1;
 }

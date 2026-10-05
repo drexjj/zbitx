@@ -1,3 +1,4 @@
+#include "cw_runtime.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -444,6 +445,7 @@ void modem_poll(int mode){
 	int bytes_available = get_tx_data_length();
 
 	if (current_mode != mode){
+        cw_runtime_disable();
 		//flush out the past decodes
 		current_mode = mode;
 		int l;
@@ -465,6 +467,7 @@ void modem_poll(int mode){
 
 		if (current_mode == MODE_CW || current_mode == MODE_CWR)
 			cw_init();
+		bytes_available = get_tx_data_length(); /* abort_tx may have cleared it */
 	}
 
 	switch(mode){
