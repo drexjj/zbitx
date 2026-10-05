@@ -6626,6 +6626,14 @@ void zbitx_poll(int all){
 					delay(3);
 					printf("Retrying I2C %d\n", retry);
 				}while(retry--);
+				// Do NOT clear f->update_remote here. That flag belongs to the
+				// web interface (remote_update_field() sends and clears it);
+				// the panel tracks its own changes with updated_at above.
+				// Clearing it here meant that whenever this poll ran before the
+				// browser's next request, the browser never got the change --
+				// e.g. the TX POWER reading, which is peak-held and set only
+				// once or twice per transmission, so the web meter sat at
+				// 0 W / SWR 1.0 for the whole transmission.
 				count++;
 				delay(10);
 			}
@@ -6700,6 +6708,26 @@ void zbitx_poll(int all){
 						matched++;
 					} else if (!strcmp(key, "power")) {
 						int raw = atoi(val);
+						/* The RP2040's vfwd is in units of 0.1 W — the same scale used
+						 * by smeter_draw() on the RP2040 display (sprintf "%d W", vfwd/10).
+						 * Do NOT apply the old ATtiny85 bridge/quadratic formula here;
+						 * just pass vfwd straight through as fwdpower.
+						 * draw_tx_meters() already divides fwdpower by 10 to get watts. */
+						/* Peak-hold over a fixed TIME window, not a sample count.
+						 *
+						 * This used to publish the peak once every 100 samples and,
+						 * at key-down, latch the first non-zero sample. Samples only
+						 * arrive once per zbitx_poll() (~150 ms, ~750 ms in CW), so
+						 * 100 samples was ~15 s or more: the meter froze on whatever
+						 * the first sample was -- usually caught while the PA was
+						 * still ramping up -- for the whole transmission. That is
+						 * why it read a different, too-low value on each TX.
+						 *
+						 * Now: rise instantly to any higher reading, and every
+						 * FWDPOWER_WINDOW_MS fall back to the peak seen during that
+						 * window, so it tracks the real output within about a
+						 * second without flickering on every sample.
+						 *
 						 * fwdpower_calc = peak in the current window
 						 * fwdpower_cnt  = millis() when the window started
 						 *                 (0 = just reset by tr_switch()/tx_off()/
