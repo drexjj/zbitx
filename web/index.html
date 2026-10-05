@@ -2948,6 +2948,9 @@
         $("#tx_meters").show();
         in_tx = true;
 
+        // Redraw now from the latest values we already have.
+        draw_meters();
+
         // Clear the RX audio buffer
         if (rxAudioInitialized && rxWorkletNode) {
             rxWorkletNode.port.postMessage({ command: 'clear_buffer' });
