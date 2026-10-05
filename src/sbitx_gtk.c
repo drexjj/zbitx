@@ -6626,7 +6626,6 @@ void zbitx_poll(int all){
 					delay(3);
 					printf("Retrying I2C %d\n", retry);
 				}while(retry--);
-				f->update_remote = 0;
 				count++;
 				delay(10);
 			}
@@ -6701,20 +6700,23 @@ void zbitx_poll(int all){
 						matched++;
 					} else if (!strcmp(key, "power")) {
 						int raw = atoi(val);
-						/* The RP2040's vfwd is in units of 0.1 W — the same scale used
-						 * by smeter_draw() on the RP2040 display (sprintf "%d W", vfwd/10).
-						 * Do NOT apply the old ATtiny85 bridge/quadratic formula here;
-						 * just pass vfwd straight through as fwdpower.
-						 * draw_tx_meters() already divides fwdpower by 10 to get watts. */
+						 * fwdpower_calc = peak in the current window
+						 * fwdpower_cnt  = millis() when the window started
+						 *                 (0 = just reset by tr_switch()/tx_off()/
+						 *                 PA calibration, start a new window) */
+						#define FWDPOWER_WINDOW_MS 500
+						int now_ms = (int)millis() | 1; // never 0, 0 means "reset"
 						if (raw > fwdpower_calc)
 							fwdpower_calc = raw;
-						if (!fwdpower_cnt) {
+						if (raw > fwdpower)
+							fwdpower = raw;
+						if (!fwdpower_cnt)
+							fwdpower_cnt = now_ms;
+						else if (now_ms - fwdpower_cnt >= FWDPOWER_WINDOW_MS) {
 							fwdpower = fwdpower_calc;
 							fwdpower_calc = raw;
+							fwdpower_cnt = now_ms;
 						}
-						if (!fwdpower)
-							fwdpower = raw;
-						fwdpower_cnt = (fwdpower_cnt + 1) % 100;
 						matched++;
 					} else if (!strcmp(key, "vswr")) {
 						vswr = atoi(val);
@@ -7182,7 +7184,7 @@ gboolean ui_tick(gpointer gook)
 				set_field("#fwdpower", buff);
 			sprintf(buff, "%d", in_tx ? vswr : 10);  /* 10 = SWR 1.0 when RX */
 			if (strcmp(get_field("#vswr")->value, buff))
-+				set_field("#vswr", buff);
+				set_field("#vswr", buff);
 		}
 		if (layout_needs_refresh)
 		{
