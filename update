@@ -5,6 +5,21 @@
 F=$@
 echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
 date
+
+# Disable the UART in /boot/firmware/config.txt if it is enabled
+CONFIG=/boot/firmware/config.txt
+if [ -f "$CONFIG" ]; then
+    if grep -q '^enable_uart=1' "$CONFIG"; then
+        echo "Disabling UART in $CONFIG"
+        sudo sed -i 's/^enable_uart=1/enable_uart=0/' "$CONFIG"
+        echo "UART disabled. A reboot is required for this change to take effect."
+    else
+        echo "enable_uart=1 not found in $CONFIG, no change needed."
+    fi
+else
+    echo "$CONFIG not found, skipping UART check."
+fi
+
 cd $HOME/sbitx
 git stash --include-untracked
 git remote set-url origin https://github.com/drexjj/zbitx.git
