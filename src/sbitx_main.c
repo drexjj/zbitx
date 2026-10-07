@@ -81,25 +81,13 @@ int scope_size = 100;	// Default size
 static bool layout_needs_refresh = false;
 #define MIN_WATERFALL_HEIGHT 10 // Define a minimum safe height
 
-/* Front Panel controls */
-char pins[15] = {0, 2, 3, 6, 7,
-				 10, 11, 12, 13, 14,
-				 21, /*22, 23,*/ 25, 27};
+/* GPIO inputs inherited from the sBitx front panel. The zBitx tuning
+   encoders and their switches live on the Pico, so the Pi-side encoder
+   pins (0, 2, 3, 12, 13, 14) are no longer configured here. */
+static const int gpio_input_pins[] = {6, 7, 10, 11, 21, 25, 27};
 
-#define ENC1_A (13)
-#define ENC1_B (12)
-#define ENC1_SW (14)
-
-#define ENC2_A (0)
-#define ENC2_B (2)
-#define ENC2_SW (3)
-
-#define SW5 (22)
-#define PTT (7)
-#define DASH (21)
-
-#define ENC_FAST 1
-#define ENC_SLOW 5
+#define PTT (7)	 // CW key jack: ring
+#define DASH (21) // CW key jack: tip
 
 #define DS3231_I2C_ADD 0x68
 // time sync, when the NTP time is not synced, this tracks the number of seconds
@@ -110,23 +98,12 @@ static long time_delta = 0;
 int zero_beat_min_magnitude = 0;
 
 
-// encoder state
-struct encoder
-{
-	int pin_a, pin_b;
-	int speed;
-	int prev_state;
-	int history;
-};
-void tuning_isr(void);
-
 int screen_width = 800, screen_height = 480;
 
 // Line height of the console's font (FONT_LOG); used to map console
 // rows when stepping the selected line with the up/down keys.
 #define CONSOLE_LINE_HEIGHT 11
 
-struct encoder enc_a, enc_b;
 
 #define MAX_FIELD_LENGTH 128
 
@@ -739,8 +716,6 @@ struct field main_controls[] = {
 	 "", 0, 10000, 1, COMMON_CONTROL},
 	{"#vswr", NULL, 1000, -1000, 50, 50, "REF", 40, "300", FIELD_NUMBER, FONT_FIELD_VALUE,
 	 "", 0, 10000, 1, COMMON_CONTROL},
-	{"bridge", NULL, 1000, -1000, 50, 50, "BRIDGE", 40, "100", FIELD_NUMBER, FONT_FIELD_VALUE,
-	 "", 10, 100, 1, COMMON_CONTROL},
 	// cw, ft8 and many digital modes need abort
 	{"#abort", NULL, 370, 50, 40, 40, "ESC", 1, "", FIELD_BUTTON, FONT_FIELD_VALUE, "", 0, 0, 0, CW_CONTROL},
 
@@ -3562,10 +3537,10 @@ void redraw()
 
 void init_gpio_pins()
 {
-	for (int i = 0; i < 15; i++)
+	for (int i = 0; i < sizeof(gpio_input_pins) / sizeof(gpio_input_pins[0]); i++)
 	{
-		pinMode(pins[i], INPUT);
-		pullUpDnControl(pins[i], PUD_UP);
+		pinMode(gpio_input_pins[i], INPUT);
+		pullUpDnControl(gpio_input_pins[i], PUD_UP);
 	}
 
 	pinMode(PTT, INPUT);
@@ -3713,103 +3688,10 @@ int key_poll(int input_method) {
   return key;
 }
 
-void enc_init(struct encoder *e, int speed, int pin_a, int pin_b)
-{
-	e->pin_a = pin_a;
-	e->pin_b = pin_b;
-	e->speed = speed;
-	e->history = 5;
-}
-
-int enc_state(struct encoder *e)
-{
-	return (digitalRead(e->pin_a) ? 1 : 0) + (digitalRead(e->pin_b) ? 2 : 0);
-}
-
-int enc_read(struct encoder *e)
-{
-	int result = 0;
-	int newState;
-
-	newState = enc_state(e); // Get current state
-
-	if (newState != e->prev_state)
-		delay(1);
-
-	if (enc_state(e) != newState || newState == e->prev_state)
-		return 0;
-
-	// these transitions point to the encoder being rotated anti-clockwise
-	if ((e->prev_state == 0 && newState == 2) ||
-		(e->prev_state == 2 && newState == 3) ||
-		(e->prev_state == 3 && newState == 1) ||
-		(e->prev_state == 1 && newState == 0))
-	{
-		e->history--;
-		// result = -1;
-	}
-	// these transitions point to the enccoder being rotated clockwise
-	if ((e->prev_state == 0 && newState == 1) ||
-		(e->prev_state == 1 && newState == 3) ||
-		(e->prev_state == 3 && newState == 2) ||
-		(e->prev_state == 2 && newState == 0))
-	{
-		e->history++;
-	}
-	e->prev_state = newState; // Record state for next pulse interpretation
-	if (e->history > e->speed)
-	{
-		result = 1;
-		e->history = 0;
-	}
-	if (e->history < -e->speed)
-	{
-		result = -1;
-		e->history = 0;
-	}
-	return result;
-}
-
-static int tuning_ticks = 0;
-void tuning_isr(void)
-{
-	int tuning = enc_read(&enc_b);
-	if (tuning < 0)
-		tuning_ticks++;
-	if (tuning > 0)
-		tuning_ticks--;
-}
-
-/* query_swr() removed — it used I2C address 0x08 (wrong) with a fixed 4-byte binary
- * protocol (also wrong). On this hardware the Pico 2040 is at address 0x0a and
- * sends power/SWR data as text ("vbatt %d\npower %d\nvswr %d\n") which
- * zbitx_poll() already reads correctly via i2cbb_read_rll(0xa, ...). */
-void oled_toggle_band()
-{
-	unsigned int freq_now = field_int("FREQ");
-	// choose the next band
-	int band_now = 1;
-	for (int i = 0; i < sizeof(band_stack) / sizeof(struct band); i++)
-	{
-		if (band_stack[i].start <= freq_now && freq_now <= band_stack[i].stop)
-			band_now = i;
-	}
-	if (band_now == (sizeof(band_stack) / sizeof(struct band)) - 1)
-		change_band("80M");
-	else
-		change_band(band_stack[band_now + 1].name);
-}
-
 void hw_init()
 {
 	wiringPiSetup();
 	init_gpio_pins();
-
-	enc_init(&enc_a, ENC_FAST, ENC1_B, ENC1_A);
-	enc_init(&enc_b, ENC_FAST, ENC2_A, ENC2_B);
-
-	wiringPiISR(ENC2_A, INT_EDGE_BOTH, tuning_isr);
-	wiringPiISR(ENC2_B, INT_EDGE_BOTH, tuning_isr);
 }
 
 void hamlib_tx(int tx_input)
@@ -4295,9 +4177,8 @@ void zbitx_poll(int all){
 						int raw = atoi(val);
 						/* The RP2040's vfwd is in units of 0.1 W — the same scale used
 						 * by smeter_draw() on the RP2040 display (sprintf "%d W", vfwd/10).
-						 * Do NOT apply the old ATtiny85 bridge/quadratic formula here;
-						 * just pass vfwd straight through as fwdpower.
-						 * draw_tx_meters() already divides fwdpower by 10 to get watts. */
+						 * Pass vfwd straight through as fwdpower; consumers divide by
+						 * 10 to get watts. */
 						/* Peak-hold over a fixed TIME window, not a sample count.
 						 *
 						 * This used to publish the peak once every 100 samples and,
@@ -4490,121 +4371,6 @@ void zbitx_init(){
 extern void focus_field(struct field *f);
 extern struct field *get_field(const char *label);
 extern int field_set(const char *label, const char *new_value);
-static time_t buttonPressTime;
-static int buttonPressed = 0;
-
-void handleButton1Press()
-{
-
-	static int menuVisible = 0;
-	static time_t buttonPressTime = 0;
-	static int buttonPressed = 0;
-
-	if (digitalRead(ENC1_SW) == 0)
-	{
-		if (!buttonPressed)
-		{
-			buttonPressed = 1;
-			buttonPressTime = time(NULL);
-		}
-		else
-		{
-			// Check the duration of the button press
-			time_t currentTime = time(NULL);
-			if (difftime(currentTime, buttonPressTime) >= 1)
-			{
-				// Long press detected
-				menuVisible = !menuVisible;
-				field_set("MENU", menuVisible == 1 ? "1" : menuVisible == 2 ? "2"
-																			: "OFF");
-
-				// Wait for the button release to avoid immediate short press detection
-				while (digitalRead(ENC1_SW) == 0)
-				{
-					delay(100); // Adjust delay time as needed
-				}
-				buttonPressed = 0; // Reset button press state after delay
-			}
-		}
-	}
-	else
-	{
-		if (buttonPressed)
-		{
-			buttonPressed = 0;
-			if (difftime(time(NULL), buttonPressTime) < 1)
-			{
-				// Short press detected
-				if (f_focus && !strcmp(f_focus->label, "AUDIO"))
-				{
-					// Switch fields without changing it's value - n1qm
-					focus_field_without_toggle(get_field("r1:mode"));
-				}
-				else
-				{
-					focus_field(get_field("r1:volume"));
-					// printf("Focus is on %s\n", f_focus->label);
-				}
-			}
-		}
-	}
-}
-
-void handleButton2Press()
-{
-	static int vfoLock = 0;
-	static time_t buttonPressTimeSW2 = 0;
-	static int buttonPressedSW2 = 0;
-
-	if (digitalRead(ENC2_SW) == 0)
-	{
-		if (!buttonPressedSW2)
-		{
-			buttonPressedSW2 = 1;
-			buttonPressTimeSW2 = time(NULL);
-		}
-		else
-		{
-			// Check the duration of the button press
-			time_t currentTime = time(NULL);
-			if (difftime(currentTime, buttonPressTimeSW2) >= 1)
-			{
-				// Long press detected - Enable/Disable VFO lock
-				vfoLock = !vfoLock;
-				field_set("VFOLK", vfoLock ? "ON" : "OFF");
-				// printf("VFOLock: %d\n", vfoLock);
-
-				if (vfoLock == 1)
-				{
-					write_console(FONT_LOG, "VFO Lock ON\n");
-				}
-				if (vfoLock == 0)
-				{
-					write_console(FONT_LOG, "VFO Lock OFF\n");
-				}
-				// Wait for the button release to avoid immediate short press detection
-				while (digitalRead(ENC2_SW) == 0)
-				{
-					delay(100); // Adjust delay time as needed
-				}
-				buttonPressedSW2 = 0; // Reset button press state after delay
-			}
-		}
-	}
-	else
-	{
-		if (buttonPressedSW2)
-		{
-			buttonPressedSW2 = 0;
-			if (difftime(time(NULL), buttonPressTimeSW2) < 1)
-			{
-				// Short press detected - Invoke oled_toggle_band()
-				oled_toggle_band();
-			}
-		}
-	}
-}
-
 void ui_tick(void)
 {
     if (termination_requested) exit(0); /* join workers outside the signal handler */
@@ -4633,26 +4399,7 @@ void ui_tick(void)
 			settings_updated = 1; // save the settings
 		}
 	}
-	// char message[100];
-
-	// check the tuning knob
-	struct field *f = get_field("r1:freq");
-
-	while (tuning_ticks > 0)
-	{
-		edit_field(f, MIN_KEY_DOWN);
-		tuning_ticks--;
-		// sprintf(message, "tune-\r\n");
-		// write_console(FONT_LOG, message);
-	}
-
-	while (tuning_ticks < 0)
-	{
-		edit_field(f, MIN_KEY_UP);
-		tuning_ticks++;
-		// sprintf(message, "tune+\r\n");
-		// write_console(FONT_LOG, message);
-	}
+	struct field *f;
 
 	// every 20 ticks call modem_poll to see if any modes need work done
 	if (ticks % 20 == 0)
@@ -4793,11 +4540,6 @@ void ui_tick(void)
 		f = get_field("waterfall");
 		update_field(f);
 
-		handleButton1Press(); // Call the SW1 handler -W2JON
-		handleButton2Press(); // Call the SW2 handler -W2JON
-		// if (digitalRead(ENC2_SW) == 0)
-		// oled_toggle_band();
-
 		if (record_start)
 			update_field(get_field("#record"));
 
@@ -4826,16 +4568,6 @@ void ui_tick(void)
 		else if (digitalRead(PTT) == HIGH && in_tx == TX_PTT)
 			tx_off();
 	}
-
-	int scroll = enc_read(&enc_a);
-	if (scroll && f_focus)
-	{
-		if (scroll < 0)
-			edit_field(f_focus, MIN_KEY_DOWN);
-		else
-			edit_field(f_focus, MIN_KEY_UP);
-	}
-	
 }
 
 /* handle modem callbacks for more data */
@@ -5108,21 +4840,6 @@ void utc_set(char *args, int update_rtc)
 	write_console(FONT_LOG, "UTC time is set\n");
 	time_delta = (long)gm_now - (long)(millis() / 1000l);
 	printf("time_delta = %ld\n", time_delta);
-}
-
-void meter_calibrate()
-{
-	// we change to 40 meters, cw
-	printf("starting meter calibration\n"
-		   "1. Attach a power meter and a dummy load to the antenna\n"
-		   "2. Adjust the drive until you see 40 watts on the power meter\n"
-		   "3. Press the tuning knob to confirm.\n");
-
-	set_field("r1:freq", "7035000");
-	set_radio_mode("CW");
-	struct field *f_bridge = get_field("bridge");
-	set_field("bridge", "100");
-	focus_field(f_bridge);
 }
 
 bool tune_on_invoked = false; // Set initial state of TUNE
@@ -5636,10 +5353,6 @@ void cmd_exec(char *cmd)
 		snprintf(callsign->value, sizeof(callsign->value), "%s", args);
 		snprintf(response, sizeof(response), "\n[Your callsign is set to %s]\n", callsign->value);
 		write_console(FONT_LOG, response);
-	}
-	else if (!strcmp(exec, "metercal"))
-	{
-		meter_calibrate();
 	}
 	else if (!strcmp(exec, "abort"))
 		abort_tx();

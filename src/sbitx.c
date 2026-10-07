@@ -42,7 +42,6 @@ FILE *pf_debug = NULL;
 #define TX_LINE 4
 #define RX_LINE 16
 #define TX_POWER 27
-#define BAND_SELECT 5
 #define LPF_A 5
 #define LPF_B 6
 #define LPF_C 10
@@ -108,7 +107,6 @@ static double tx_amp = 0.0;
 static double alc_level = 1.0;
 static int tr_relay = 0;
 static int rx_pitch = 600;   // should probably us get_pitch() directly
-static int bridge_compensation = 100;
 static double voice_clip_level = 0.04;
 static int in_calibration = 1; // this turns off alc, clipping et al
 static double ssb_val = 1.0;   // W9JES
@@ -1694,20 +1692,6 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 	}
 #endif
 }
-/* read_power() has been removed.
- * The ATtiny85 SWR bridge at I2C 0x8 is no longer present in hardware.
- * fwdpower, vswr, and vbatt_raw are now set directly by the RP2040 front
- * panel text parser in zbitx_poll() inside sbitx_main.c.
- * The RP2040 sends: "vbatt N\npower N\nvswr N\n" on every on_request() call.
- *
- * ALC still works: the GTK parser updates fwdpower from the RP2040 value
- * which carries the same scaled ADC units the old ATtiny85 produced.
- */
-void read_power()
-{
-	/* no-op: data now comes from RP2040 front panel via sbitx_main.c */
-}
-
 static int tx_process_restart = 0;
 
 void tx_process(
@@ -2003,10 +1987,7 @@ void tx_process(
 	//  (mic/EQ/compression/mute + STEP1 copy) and tail (sdr_modulation_update)
 	//  that this snapshot never captured.)
  
-	// read_power() is not called here. On this hardware the Pico 2040 (I2C address
-	// 0x0a) handles SWR/power measurement and sends the data as text via zbitx_poll().
-	// The old read_power() used address 0x08 (wrong) and binary protocol (wrong);
-	// it was dead code that never successfully read anything on this hardware.
+	// Forward power and SWR come from the Pico (I2C 0x0a) via zbitx_poll().
  
 	// sdr_modulation_update is called once here.
 	// Previously it was called twice (once here and once at the very end after
@@ -2757,8 +2738,7 @@ void setup()
 	tx_list->tuned_bin = tx_shift;
 	tx_init(7000000, MODE_LSB, -3000, -150);
 
-	/* Version detection: ATtiny85 SWR bridge at I2C 0x8 has been removed.
-	 * hw version is now read from hw_settings.ini (hw= key).
+	/* hw version is read from hw_settings.ini (hw= key).
 	 * If not set there, default to SBITX_V4 (zBitx with RP2040 front panel). */
 	if (sbitx_version == -1)
 		sbitx_version = SBITX_V4;
@@ -2944,10 +2924,6 @@ static void sdr_request_impl(char *request, char *response)
 		tx_drive = atoi(value);
 		if (in_tx)
 			set_tx_power_levels();
-	}
-	else if (!strcmp(cmd, "bridge"))
-	{
-		bridge_compensation = atoi(value);
 	}
 	else if (!strcmp(cmd, "r1:gain"))
 	{
