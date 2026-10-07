@@ -18,11 +18,11 @@ VERSION := $(shell grep VER src/sdr_ui.h | awk 'FNR==1{print $$4}' | sed -e 's/"
 
 # ---- Source files -----------------------------------------------------------
 COMMON_SRC := \
-	src/vfo.c src/sbitx_sound.c src/fft_filter.c src/sbitx_gtk.c src/sbitx_utils.c \
+	src/vfo.c src/sbitx_sound.c src/fft_filter.c src/sbitx_main.c src/sbitx_utils.c \
 	src/i2c.c src/si5351v2.c src/ini.c src/hamlib.c src/queue.c src/modems.c src/logbook.c \
-	src/modem_cw.c src/cw_runtime.c src/radio_control.c src/settings_ui.c src/hist_disp.c src/ntputil.c \
+	src/modem_cw.c src/cw_runtime.c src/radio_control.c src/hist_disp.c src/ntputil.c \
 	src/telnet.c src/macros.c src/modem_ft8.c src/remote.c src/mongoose.c src/para_eq.c \
-	src/webserver.c src/eq_ui.c src/wifi_panel.c
+	src/webserver.c src/wifi_panel.c
 
 FT8_LIB := src/ft8_lib/libft8.a
 
@@ -47,9 +47,6 @@ endif
 MONGOOSE_FLAGS := -DMG_ENABLE_OPENSSL=1 -DMG_ENABLE_MBEDTLS=0 -DMG_ENABLE_LINES=1 \
 	-DMG_TLS=MG_TLS_OPENSSL -DMG_ENABLE_SSI=0 -DMG_ENABLE_IPV6=0
 
-GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0)
-GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0)
-
 LIBS := -lwiringPi -lasound -lm -lfftw3 -lfftw3f -pthread -lncurses -lsqlite3 \
 	-lnsl -lrt -lssl -lcrypto
 
@@ -69,8 +66,6 @@ db: dirs
 		cd data && sqlite3 sbitx.db < create_db.sql; \
 	fi
 
-# --- zbitx (headless daemon; compiles sbitx.c with the daemon define) --------
-zbitx: EXTRA_CFLAGS := -DJJ_HEADLESS_DAEMON=1
 zbitx: db
 	@echo "compiling $@ version $(VERSION) in $(CURDIR)"
 	@[ "$(OPT)" = "o" ] && rm -f *.gcda || true
@@ -78,7 +73,7 @@ zbitx: db
 	$(CC) $(FLAGS) $(EXTRA_CFLAGS) $(MONGOOSE_FLAGS) -o $@ \
 		$(COMMON_SRC) src/sbitx.c \
 		$(FT8_LIB) \
-		$(LIBS) $(GTK_CFLAGS) $(GTK_LIBS)
+		$(LIBS)
 	@[ "$(STRIP_BIN)" = "yes" ] && { echo "Stripping $@"; strip $@; } || true
 	@if [ -x $@ ]; then \
 		sudo setcap 'cap_sys_nice,cap_sys_time+ep' $@ || :; \

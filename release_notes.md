@@ -1,3 +1,7 @@
+# v5.14
+- Refactored the headless build
+- Removed unused source files
+
 # v5.13
 - Modified CW handler which now stores key events in buffer - thanks PA3CNO!
 - Increase waterfall speed for CW mode

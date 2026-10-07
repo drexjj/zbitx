@@ -28,7 +28,7 @@ git pull
 git checkout main
 cd $HOME/sbitx/src/ft8_lib
 make clean
-make
+make OPT=o zbitx
 cd $HOME/sbitx/
 make clean
 make

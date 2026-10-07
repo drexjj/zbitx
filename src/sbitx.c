@@ -1697,7 +1697,7 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 /* read_power() has been removed.
  * The ATtiny85 SWR bridge at I2C 0x8 is no longer present in hardware.
  * fwdpower, vswr, and vbatt_raw are now set directly by the RP2040 front
- * panel text parser in zbitx_poll() inside sbitx_gtk.c.
+ * panel text parser in zbitx_poll() inside sbitx_main.c.
  * The RP2040 sends: "vbatt N\npower N\nvswr N\n" on every on_request() call.
  *
  * ALC still works: the GTK parser updates fwdpower from the RP2040 value
@@ -1705,7 +1705,7 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
  */
 void read_power()
 {
-	/* no-op: data now comes from RP2040 front panel via sbitx_gtk.c */
+	/* no-op: data now comes from RP2040 front panel via sbitx_main.c */
 }
 
 static int tx_process_restart = 0;

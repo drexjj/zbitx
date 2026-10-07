@@ -19,7 +19,7 @@
 #include "i2cbb.h"
 
 /* The front panel lives at this I2C address (matches ZBITX_I2C_ADDRESS in
- * sbitx_gtk.c). We only ever write from the main thread via wifi_panel_poll. */
+ * sbitx_main.c). We only ever write from the main thread via wifi_panel_poll. */
 #define WIFI_PANEL_I2C_ADDRESS 0x0a
 
 /* Wireless interface. Bookworm's default onboard interface is wlan0. */
@@ -28,7 +28,7 @@
 /*
  * The zBitx app runs as the unprivileged `pi` user (see start.sh) and relies
  * on passwordless sudo for privileged actions, exactly like the existing
- * `sudo /sbin/shutdown` calls in sbitx_gtk.c. NetworkManager lets the active
+ * `sudo /sbin/shutdown` calls in sbitx_main.c. NetworkManager lets the active
  * console user *read* status without privilege, but changing state (forcing a
  * rescan, connecting, disconnecting, deleting a profile) needs privilege. So
  * we split nmcli into two prefixes:
@@ -570,7 +570,7 @@ void wifi_panel_command(const char *args)
 }
 
 /* Push one {LABEL value} block to the panel. Mirrors the helper style used in
- * sbitx_gtk.c: the block is "<LABEL> <value>}" written with '{' as the command
+ * sbitx_main.c: the block is "<LABEL> <value>}" written with '{' as the command
  * byte. Called on the main thread only. */
 static void panel_push(const char *label, const char *value)
 {
