@@ -26,9 +26,7 @@ git remote set-url origin https://github.com/drexjj/zbitx.git
 git stash
 git pull
 git checkout main
-cd $HOME/sbitx/src/ft8_lib
-make clean
-make OPT=o zbitx
+# ft8_lib is compiled as part of the main build below
 cd $HOME/sbitx/
 make clean
 make

@@ -24,7 +24,14 @@ COMMON_SRC := \
 	src/telnet.c src/macros.c src/modem_ft8.c src/remote.c src/mongoose.c src/para_eq.c \
 	src/webserver.c src/wifi_panel.c
 
-FT8_LIB := src/ft8_lib/libft8.a
+# FT8/FT4 codec: kgoba/ft8_lib (vendored in src/ft8_lib, upstream commit
+# 9fec6ca, which adds non-standard/compound callsign support). It is compiled
+# from source with the rest of zbitx, so there is no prebuilt library to keep
+# in sync with the headers.
+FT8_SRC := \
+	src/ft8_lib/ft8/constants.c src/ft8_lib/ft8/crc.c src/ft8_lib/ft8/decode.c \
+	src/ft8_lib/ft8/encode.c src/ft8_lib/ft8/ldpc.c src/ft8_lib/ft8/message.c \
+	src/ft8_lib/ft8/text.c src/ft8_lib/fft/kiss_fft.c src/ft8_lib/fft/kiss_fftr.c
 
 # ---- Flags ------------------------------------------------------------------
 # Default (debug) flags. Override the optimization mode with OPT=o|g|u.
@@ -72,7 +79,7 @@ zbitx: db
 	@[ "$(OPT)" = "g" ] && rm -f *.gcda || true
 	$(CC) $(FLAGS) $(EXTRA_CFLAGS) $(MONGOOSE_FLAGS) -o $@ \
 		$(COMMON_SRC) src/sbitx.c \
-		$(FT8_LIB) \
+		$(FT8_SRC) \
 		$(LIBS)
 	@[ "$(STRIP_BIN)" = "yes" ] && { echo "Stripping $@"; strip $@; } || true
 	@if [ -x $@ ]; then \

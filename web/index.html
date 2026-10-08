@@ -3026,6 +3026,11 @@
     function deco_strip(text) {
         return text.replace(/#./g, '');
     }
+    // FT8 text is inserted as HTML; escape it so an unresolved hashed
+    // callsign such as <...> (or any '<' / '&') shows as text
+    function ft8_html(text) {
+        return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
 
     // Style codes of interest - if present the caller / grid is not found in the log
     const FF_MYCALL = 16;
@@ -3058,13 +3063,15 @@
                 jclass = "ft8-old-grid";
                 break;
         }
-        return "<span class='" + jclass + "'>" + deco_strip(text) + "</span>";
+        return "<span class='" + jclass + "'>" + ft8_html(deco_strip(text)) + "</span>";
     }
     function FT8_stylize_message_item(item, text, style) {
         //tokenize the message
         var normalized_text = text.replace(/_/g, ' ');
         var token_list = normalized_text.match(/\S+/g)
-        if (token_list.length < 8 || token_list[4] != '~' || token_list.length > 9) {
+        // 7 tokens is a two-word message, e.g. "CQ PJ4/K1ABC": a compound
+        // callsign cannot send a grid in the same message
+        if (token_list.length < 7 || token_list[4] != '~' || token_list.length > 9) {
             log("FT8_process_message: error parsing [" + text + "]");
             return;
         }
@@ -3092,20 +3099,24 @@
         else {
             item.className = "sbitx-list-item";
         }
-        var htmLabel = "<span class = 'ft8-label'>" + deco_strip(label) + "</span>";
+        var htmLabel = "<span class = 'ft8-label'>" + ft8_html(deco_strip(label)) + "</span>";
         // detailed markup
         var htmMessage = "";
         if (deco_strip(m1) == "CQ") {
             item.className = "sbitx-list-item wsjtx-cq-in-message";
-            if (token_list.length == 8) { // CQ sender grid
+            if (token_list.length == 7) { // CQ sender (compound callsign, no grid)
+                htmMessage = "CQ " + deco_to_span(m2);
+            } else if (token_list.length == 8) { // CQ sender grid
                 htmMessage = "CQ " + deco_to_span(m2) + " " + deco_to_span(m3);
             } else { // CQ DX sender grid
-                htmMessage = "CQ " + deco_strip(m2) + " " + deco_to_span(m3) + " " + deco_to_span(m4);
+                htmMessage = "CQ " + ft8_html(deco_strip(m2)) + " " + deco_to_span(m3) + " " + deco_to_span(m4);
             }
         }
         else {
-            // contact sender grid|R
-            htmMessage = deco_to_span(m1) + " " + deco_to_span(m2) + " " + deco_to_span(m3);
+            // contact sender [grid|R]
+            htmMessage = deco_to_span(m1) + " " + deco_to_span(m2);
+            if (m3 !== undefined)
+                htmMessage += " " + deco_to_span(m3);
         }
         item.innerHTML = htmLabel + '<span class="ft8-message">' + htmMessage + '</span>';
     }
@@ -3113,6 +3124,10 @@
         var item = document.createElement("li");
         FT8_stylize_message_item(item, text, style);
         item.id = deco_strip(text).replace(/[^\w\-\~]+/g, "_");
+        // The id turns '/' into '_', which FT8_message_chosen() would turn
+        // into a space and split a callsign like PJ4/K1ABC in two. Keep the
+        // real text for the click handler.
+        item.setAttribute('data-ft8text', deco_strip(text).trim());
         item.addEventListener("click", FT8_message_chosen);
 
         // De-duplication key: the SAME transmission arrives more than once with
@@ -3173,7 +3188,7 @@
     // 3. a message of your own that you want to resend
 
     function FT8_message_chosen(event) {
-        var message_text = event.currentTarget.id;
+        var message_text = event.currentTarget.getAttribute('data-ft8text') || event.currentTarget.id;
         var mycallsign = $("#MYCALLSIGN").val().toUpperCase();
 
         if (message_text.length == 0)
