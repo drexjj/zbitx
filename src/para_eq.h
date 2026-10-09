@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <glib.h>
 #define NUM_BANDS 5  // Let's start out with 5 bands in the parametric EQ
 
 // Define Band structure

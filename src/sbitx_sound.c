@@ -1224,7 +1224,7 @@ void *loopback_thread_function(void *ptr){
 	// sound_reset() call) stall the real-time audio thread for however
 	// long it ran, causing ALSA underruns even at low average CPU load.
 	// Same root cause as the GTK/audio priority collision fixed above --
-	// see sbitx_gtk.c. Keep this thread real-time (so ordinary SCHED_OTHER
+	// see sbitx_main.c. Keep this thread real-time (so ordinary SCHED_OTHER
 	// processes can't starve it) but strictly below sound_thread's
 	// priority so sound_thread always preempts it immediately.
 	int max_prio = sched_get_priority_max(SCHED_FIFO);

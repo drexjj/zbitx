@@ -16,9 +16,8 @@
 #include "modem_ft8.h"
 
 #include "ft8_lib/common/common.h"
-#include "ft8_lib/common/wave.h"
-#include "ft8_lib/common/debug.h"
-#include "ft8_lib/ft8/pack.h"
+#include "ft8_lib/ft8/debug.h"
+#include "ft8_lib/ft8/message.h"
 #include "ft8_lib/ft8/decode.h"
 #include "ft8_lib/ft8/encode.h"
 #include "ft8_lib/ft8/constants.h"
@@ -60,6 +59,177 @@ static const int kTime_osr = 2; // Time oversampling rate (symbol subdivision)
 #define FT4_SYMBOL_BT 1.0f ///< symbol smoothing filter bandwidth factor (BT)
 
 #define GFSK_CONST_K 5.336446f ///< == pi * sqrt(2 / log(2))
+
+/*
+ * Callsign hash table.
+ *
+ * FT8 cannot fit a non-standard or compound callsign (PJ4/K1ABC, VE3/W9XYZ,
+ * 3DA0XYZ/P ...) into most messages, so it sends a 22/12/10-bit hash of it
+ * instead. The receiver turns the hash back into a callsign by remembering
+ * every callsign it has seen in full -- from a CQ, from a type 4 message, or
+ * from one of our own transmissions. ft8_lib calls save/lookup below for that.
+ *
+ * Each entry ages by one every decode cycle (15 s) and is dropped after
+ * CALLSIGN_MAX_AGE cycles without being heard or used. Our own callsign is
+ * re-saved every cycle so replies addressed to us always resolve.
+ *
+ * The decoder runs on ft8_thread while transmissions are encoded on the UI
+ * thread, so every ft8_lib call that can touch the table holds
+ * callsign_hash_lock.
+ */
+#define CALLSIGN_HASHTABLE_SIZE 256
+#define CALLSIGN_MAX_AGE 40 // decode cycles, i.e. 10 minutes
+
+static struct
+{
+    char callsign[12]; // non-empty means the slot is in use
+    uint32_t hash;     // 22-bit hash in the low bits, age in the top 8 bits
+} callsign_hashtable[CALLSIGN_HASHTABLE_SIZE];
+static int callsign_hashtable_count = 0;
+static pthread_mutex_t callsign_hash_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// Put an entry in the first free slot of its probe sequence.
+// hash carries the 22-bit hash and the age byte.
+static void callsign_hash_insert(const char* callsign, uint32_t hash)
+{
+    // all three hash sizes are derived from the 22-bit one; n10 picks the slot
+    int idx = ((((hash & 0x3FFFFFu) >> 12) & 0x3FFu) * 23) % CALLSIGN_HASHTABLE_SIZE;
+    for (int probes = 0; probes < CALLSIGN_HASHTABLE_SIZE; probes++)
+    {
+        if (callsign_hashtable[idx].callsign[0] == '\0')
+        {
+            strncpy(callsign_hashtable[idx].callsign, callsign, 11);
+            callsign_hashtable[idx].callsign[11] = '\0';
+            callsign_hashtable[idx].hash = hash;
+            callsign_hashtable_count++;
+            return;
+        }
+        idx = (idx + 1) % CALLSIGN_HASHTABLE_SIZE;
+    }
+    // table full: the callsign simply stays unresolved as <...>
+}
+
+static void callsign_hash_save(const char* callsign, uint32_t n22)
+{
+    n22 &= 0x3FFFFFu;
+    int idx = (((n22 >> 12) & 0x3FFu) * 23) % CALLSIGN_HASHTABLE_SIZE;
+    for (int probes = 0; probes < CALLSIGN_HASHTABLE_SIZE; probes++)
+    {
+        if (callsign_hashtable[idx].callsign[0] == '\0')
+            break;
+        if ((callsign_hashtable[idx].hash & 0x3FFFFFu) == n22 &&
+            !strcmp(callsign_hashtable[idx].callsign, callsign))
+        {
+            callsign_hashtable[idx].hash = n22; // seen again: reset the age
+            return;
+        }
+        idx = (idx + 1) % CALLSIGN_HASHTABLE_SIZE;
+    }
+    callsign_hash_insert(callsign, n22);
+}
+
+static bool callsign_hash_lookup(ftx_callsign_hash_type_t hash_type, uint32_t hash, char* callsign)
+{
+    uint8_t shift = (hash_type == FTX_CALLSIGN_HASH_10_BITS) ? 12
+                  : (hash_type == FTX_CALLSIGN_HASH_12_BITS) ? 10 : 0;
+    // every hash size reduces to the same 10-bit key used to pick the slot
+    int idx = ((((hash << shift) >> 12) & 0x3FFu) * 23) % CALLSIGN_HASHTABLE_SIZE;
+    for (int probes = 0; probes < CALLSIGN_HASHTABLE_SIZE; probes++)
+    {
+        if (callsign_hashtable[idx].callsign[0] == '\0')
+            return false;
+        if (((callsign_hashtable[idx].hash & 0x3FFFFFu) >> shift) == hash)
+        {
+            strcpy(callsign, callsign_hashtable[idx].callsign);
+            return true;
+        }
+        idx = (idx + 1) % CALLSIGN_HASHTABLE_SIZE;
+    }
+    return false;
+}
+
+// Age every entry by one decode cycle and drop the ones not heard for too long.
+// Deleting from an open-addressing table can break probe chains, so the
+// surviving entries are re-inserted afterwards.
+static void callsign_hash_age(void)
+{
+    int removed = 0;
+    for (int i = 0; i < CALLSIGN_HASHTABLE_SIZE; i++)
+    {
+        if (callsign_hashtable[i].callsign[0] == '\0')
+            continue;
+        uint32_t age = callsign_hashtable[i].hash >> 24;
+        if (age >= CALLSIGN_MAX_AGE)
+        {
+            callsign_hashtable[i].callsign[0] = '\0';
+            callsign_hashtable[i].hash = 0;
+            callsign_hashtable_count--;
+            removed++;
+        }
+        else
+            callsign_hashtable[i].hash = ((age + 1) << 24) | (callsign_hashtable[i].hash & 0x3FFFFFu);
+    }
+    if (!removed)
+        return;
+
+    static struct { char callsign[12]; uint32_t hash; } keep[CALLSIGN_HASHTABLE_SIZE];
+    int n = 0;
+    for (int i = 0; i < CALLSIGN_HASHTABLE_SIZE; i++)
+        if (callsign_hashtable[i].callsign[0])
+        {
+            keep[n].hash = callsign_hashtable[i].hash;
+            strcpy(keep[n++].callsign, callsign_hashtable[i].callsign);
+        }
+    memset(callsign_hashtable, 0, sizeof(callsign_hashtable));
+    callsign_hashtable_count = 0;
+    for (int i = 0; i < n; i++)
+        callsign_hash_insert(keep[i].callsign, keep[i].hash); // keeps its age
+}
+
+static ftx_callsign_hash_interface_t callsign_hash_if = {
+    .lookup_hash = callsign_hash_lookup,
+    .save_hash = callsign_hash_save
+};
+
+// Make sure our own callsign is in the hash table (call with the lock held).
+// Encoding a CQ is the simplest way to have ft8_lib hash a callsign of any
+// kind and hand it to callsign_hash_save().
+static void callsign_hash_add_own(const char* mycallsign)
+{
+    if (strlen(mycallsign) < 3)
+        return;
+    char cq[24];
+    ftx_message_t scratch;
+    snprintf(cq, sizeof(cq), "CQ %s", mycallsign);
+    ftx_message_init(&scratch);
+    ftx_message_encode(&scratch, &callsign_hash_if, cq);
+}
+
+// ft8_lib shows a callsign it recovered from a hash as <CALL>. Drop the
+// brackets so the QSO logic, the logbook lookups, the web UI and the front
+// panel all see the plain callsign, and so a reply built from it can be
+// encoded again (ft8_lib rejects bracketed text). An unresolved hash stays
+// as <...>, which ft8_process() refuses to answer.
+static void strip_hash_brackets(char* text)
+{
+    char* dst = text;
+    for (char* src = text; *src; )
+    {
+        if (*src == '<' && strncmp(src, "<...>", 5))
+        {
+            char* close = strchr(src, '>');
+            if (close)
+            {
+                memmove(dst, src + 1, close - src - 1);
+                dst += close - src - 1;
+                src = close + 1;
+                continue;
+            }
+        }
+        *dst++ = *src++;
+    }
+    *dst = '\0';
+}
 
 /// Computes a GFSK smoothing pulse.
 /// The pulse is theoretically infinitely long, however, here it's truncated at 3 times the symbol length.
@@ -149,10 +319,15 @@ int sbitx_ft8_encode(char *message, int32_t freq,  float *signal, bool is_ft4)
 {
     float frequency = 1.0 * freq;
 
-    // First, pack the text data into binary message
-    uint8_t packed[FTX_LDPC_K_BYTES];
-    int rc = pack77(message, packed);
-    if (rc < 0)
+    // First, pack the text data into binary message. ft8_lib picks the
+    // message type: standard, non-standard callsign (with a hashed call) or
+    // free text, and saves every callsign it sends into the hash table.
+    ftx_message_t msg;
+    ftx_message_init(&msg);
+    pthread_mutex_lock(&callsign_hash_lock);
+    ftx_message_rc_t rc = ftx_message_encode(&msg, &callsign_hash_if, message);
+    pthread_mutex_unlock(&callsign_hash_lock);
+    if (rc != FTX_MESSAGE_RC_OK)
     {
         printf("Cannot parse message!\n");
         printf("RC = %d\n", rc);
@@ -167,9 +342,9 @@ int sbitx_ft8_encode(char *message, int32_t freq,  float *signal, bool is_ft4)
     // Second, encode the binary message as a sequence of FSK tones
     uint8_t tones[num_tones]; // Array of 79 tones (symbols)
     if (is_ft4)
-        ft4_encode(packed, tones);
+        ft4_encode(msg.payload, tones);
     else
-        ft8_encode(packed, tones);
+        ft8_encode(msg.payload, tones);
 
     // Third, convert the FSK tones into an audio signal
     int sample_rate = 12000;
@@ -215,7 +390,7 @@ static float blackman_i(int i, int N)
     return a0 - a1 * x1 + a2 * x2;
 }
 
-void waterfall_init(waterfall_t* me, int max_blocks, int num_bins, int time_osr, int freq_osr)
+void waterfall_init(ftx_waterfall_t* me, int max_blocks, int num_bins, int time_osr, int freq_osr)
 {
     size_t mag_size = max_blocks * time_osr * freq_osr * num_bins * sizeof(me->mag[0]);
     me->max_blocks = max_blocks;
@@ -228,7 +403,7 @@ void waterfall_init(waterfall_t* me, int max_blocks, int num_bins, int time_osr,
     LOG(LOG_DEBUG, "Waterfall size = %zu\n", mag_size);
 }
 
-void waterfall_free(waterfall_t* me)
+void waterfall_free(ftx_waterfall_t* me)
 {
     free(me->mag);
 }
@@ -255,7 +430,7 @@ typedef struct
     float fft_norm;      ///< FFT normalization factor
     float* window;       ///< Window function for STFT analysis (nfft samples)
     float* last_frame;   ///< Current STFT analysis frame (nfft samples)
-    waterfall_t wf;      ///< Waterfall object
+    ftx_waterfall_t wf;  ///< Waterfall object
     float max_mag;       ///< Maximum detected magnitude (debug stats)
 
     // KISS FFT housekeeping variables
@@ -265,8 +440,8 @@ typedef struct
 
 static void monitor_init(monitor_t* me, const monitor_config_t* cfg)
 {
-    float slot_time = (cfg->protocol == PROTO_FT4) ? FT4_SLOT_TIME : FT8_SLOT_TIME;
-    float symbol_period = (cfg->protocol == PROTO_FT4) ? FT4_SYMBOL_PERIOD : FT8_SYMBOL_PERIOD;
+    float slot_time = (cfg->protocol == FTX_PROTOCOL_FT4) ? FT4_SLOT_TIME : FT8_SLOT_TIME;
+    float symbol_period = (cfg->protocol == FTX_PROTOCOL_FT4) ? FT4_SYMBOL_PERIOD : FT8_SYMBOL_PERIOD;
     // Compute DSP parameters that depend on the sample rate
     me->block_size = (int)(cfg->sample_rate * symbol_period); // samples corresponding to one FSK symbol
     me->subblock_size = me->block_size / cfg->time_osr;
@@ -378,6 +553,43 @@ static void monitor_reset(monitor_t* me)
     me->max_mag = 0;
 }
 
+static int compare_int(const void* a, const void* b)
+{
+    return *(const int*)a - *(const int*)b;
+}
+
+/// SNR estimate for a decoded candidate, in dB referred to 2500 Hz
+/// (Farhan's method, formerly patched into ft8_lib's decode.c).
+/// For every symbol it sorts the magnitudes of the 8 tone bins, averages the
+/// strongest quarter as signal and the middle half as noise.
+static int candidate_snr(const ftx_waterfall_t* wf, const ftx_candidate_t* candidate)
+{
+    const int sub = wf->freq_osr * wf->time_osr;
+    int zoom[8 * sub];
+    float min_sum = 0, max_sum = 0;
+
+    for (int block = 0; block < wf->num_blocks; block++)
+    {
+        for (int j = 0; j < 8; j++)
+            for (int k = 0; k < sub; k++)
+                zoom[j * sub + k] = wf->mag[block * wf->block_stride + candidate->freq_offset + candidate->freq_sub + j * sub + k];
+
+        qsort(zoom, 8 * sub, sizeof(zoom[0]), compare_int);
+
+        for (int j = 0; j < sub * 2; j++)
+            min_sum += zoom[j + 2 * sub];
+        for (int j = 1; j <= sub; j++)
+            max_sum += zoom[8 * sub - j];
+    }
+
+    min_sum = min_sum / (wf->num_blocks * sub * 2);
+    max_sum = max_sum / (wf->num_blocks * sub);
+
+    int min = (int)(min_sum / 2 - 240);
+    int max = (int)(max_sum / 2 - 240);
+    return max - min - 26;
+}
+
 static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
 {
     int sample_rate = 12000;
@@ -392,7 +604,7 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
         .sample_rate = sample_rate,
         .time_osr = kTime_osr,
         .freq_osr = kFreq_osr,
-        .protocol = is_ft8 ? PROTO_FT8 : PROTO_FT4
+        .protocol = is_ft8 ? FTX_PROTOCOL_FT8 : FTX_PROTOCOL_FT4
     };
 
 		//timestamp the packets
@@ -420,13 +632,17 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
 //    LOG(LOG_INFO, "Max magnitude: %.1f dB\n", mon.max_mag);
 
     // Find top candidates by Costas sync score and localize them in time and frequency
-    candidate_t candidate_list[kMax_candidates];
-    int num_candidates = ft8_find_sync(&mon.wf, kMax_candidates, candidate_list, kMin_score);
+    ftx_candidate_t candidate_list[kMax_candidates];
+    int num_candidates = ftx_find_candidates(&mon.wf, kMax_candidates, candidate_list, kMin_score);
+
+    pthread_mutex_lock(&callsign_hash_lock);
+    callsign_hash_add_own(mycallsign_upper);
+    pthread_mutex_unlock(&callsign_hash_lock);
 
     // Hash table for decoded messages (to check for duplicates)
     int num_decoded = 0;
-    message_t decoded[kMax_decoded_messages];
-    message_t* decoded_hashtable[kMax_decoded_messages];
+    ftx_message_t decoded[kMax_decoded_messages];
+    ftx_message_t* decoded_hashtable[kMax_decoded_messages];
 
     // Initialize hash table pointers
     for (int i = 0; i < kMax_decoded_messages; ++i)
@@ -438,23 +654,21 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
     // Go over candidates and attempt to decode messages
     for (int idx = 0; idx < num_candidates; ++idx)
     {
-        const candidate_t* cand = &candidate_list[idx];
+        const ftx_candidate_t* cand = &candidate_list[idx];
         if (cand->score < kMin_score)
             continue;
 
         float freq_hz = (cand->freq_offset + (float)cand->freq_sub / mon.wf.freq_osr) / mon.symbol_period;
         float time_sec = (cand->time_offset + (float)cand->time_sub / mon.wf.time_osr) * mon.symbol_period;
 
-        message_t message;
-        decode_status_t status;
-        if (!ft8_decode(&mon.wf, cand, &message, kLDPC_iterations, &status)){
+        ftx_message_t message;
+        ftx_decode_status_t status;
+        if (!ftx_decode_candidate(&mon.wf, cand, kLDPC_iterations, &message, &status)){
             // printf("000000 %3d %+4.2f %4.0f ~  ---\n", cand->score, time_sec, freq_hz);
             if (status.ldpc_errors > 0)
                 LOG(LOG_DEBUG, "LDPC decode: %d errors\n", status.ldpc_errors);
             else if (status.crc_calculated != status.crc_extracted)
                 LOG(LOG_DEBUG, "CRC mismatch!\n");
-            else if (status.unpack_status != 0)
-                LOG(LOG_DEBUG, "Error while unpacking!\n");
             continue;
         }
 
@@ -467,8 +681,8 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
                 LOG(LOG_DEBUG, "Found an empty slot\n");
                 found_empty_slot = true;
             }
-            else if ((decoded_hashtable[idx_hash]->hash == message.hash) && (0 == strcmp(decoded_hashtable[idx_hash]->text, message.text))) {
-                LOG(LOG_DEBUG, "Found a duplicate [%s]\n", message.text);
+            else if ((decoded_hashtable[idx_hash]->hash == message.hash) && (0 == memcmp(decoded_hashtable[idx_hash]->payload, message.payload, sizeof(message.payload)))) {
+                LOG(LOG_DEBUG, "Found a duplicate\n");
                 found_duplicate = true;
             }
             else {
@@ -484,12 +698,25 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
            decoded_hashtable[idx_hash] = &decoded[idx_hash];
            ++num_decoded;
 
+			// Unpack to text. This also saves any callsign sent in full
+			// (e.g. "CQ PJ4/K1ABC") so later hashed mentions of it resolve.
+			char text[FTX_MAX_MESSAGE_LENGTH];
+			ftx_message_offsets_t offsets;
+			pthread_mutex_lock(&callsign_hash_lock);
+			ftx_message_rc_t unpack_rc = ftx_message_decode(&message, &callsign_hash_if, text, &offsets);
+			pthread_mutex_unlock(&callsign_hash_lock);
+			if (unpack_rc != FTX_MESSAGE_RC_OK) {
+				LOG(LOG_DEBUG, "Error while unpacking!\n");
+				continue;
+			}
+			strip_hash_brackets(text);
+
 			char buff[1000];
             sprintf(buff, "%s %3d %+03d %-4.0f ~  %s\n", time_str, 
-			  cand->score, cand->snr, freq_hz, message.text);
+			  cand->score, candidate_snr(&mon.wf, cand), freq_hz, text);
 			//For troubleshooting you can display the time offset - n1qm
 			//sprintf(buff, "%s %d %+03d %-4.0f ~  %s\n", time_str, cand->time_offset,
-			//  cand->snr, freq_hz, message.text);
+			//  candidate_snr(&mon.wf, cand), freq_hz, text);
 			if (strstr(buff, mycallsign_upper)){
 				write_console(FONT_FT8_REPLY, buff);
 				ft8_process(buff, FT8_CONTINUE_QSO);
@@ -500,6 +727,9 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
         }
     }
     //LOG(LOG_INFO, "Decoded %d messages\n", num_decoded);
+    pthread_mutex_lock(&callsign_hash_lock);
+    callsign_hash_age();
+    pthread_mutex_unlock(&callsign_hash_lock);
 
     monitor_free(&mon);
 
@@ -825,6 +1055,14 @@ void ft8_process(char *message, int operation){
 
 	if (ft8_message_tokenize(message) == -1)
 		return;
+
+	// <...> is a hashed callsign we have not heard in full yet, so there is
+	// nobody to reply to until they send a CQ or another full-callsign message
+	if (strstr(m1, "<...>") || strstr(m2, "<...>") || strstr(m3, "<...>") || strstr(m4, "<...>")){
+		if (operation == FT8_START_QSO)
+			write_console(FONT_LOG, "FT8: callsign not known yet (<...>), wait for them to send it in full\n");
+		return;
+	}
 
 	call = field_str("CALL");
 	exchange = field_str("EXCH");

@@ -4,6 +4,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 // Compute 14-bit CRC for a sequence of given number of bits using FT8/FT4 CRC polynomial
 // [IN] message  - byte sequence (MSB first)
 // [IN] num_bits - number of bits in the sequence
@@ -18,5 +23,9 @@ uint16_t ftx_extract_crc(const uint8_t a91[]);
 /// @param[in] payload 77 bits of payload data
 /// @param[out] a91 91 bits of payload data + CRC
 void ftx_add_crc(const uint8_t payload[], uint8_t a91[]);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // _INCLUDE_CRC_H_
