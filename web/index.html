@@ -464,7 +464,14 @@
             <!-- wsjtx specific controls -->
             <section id="FT8_ui" class="sbitx-panel mode-panel">
                 <div id="wsjtx-activity" class="sbitx-list-container">
-                    Band Activity
+                    <div class="ft8-list-header">
+                        <span>Band Activity</span>
+                        <span class="ft8-filter" role="group" aria-label="Show decodes">
+                            <button type="button" class="ft8-filter-btn active" data-filter="ALL" aria-pressed="true">All</button><button type="button" class="ft8-filter-btn" data-filter="CQ" aria-pressed="false" title="CQ calls, plus anything to or from you">CQ</button>
+                        </span>
+                        <!-- holds the radio's FT8_FILTER field; shared with the front panel -->
+                        <input type="hidden" id="FT8_FILTER" value="ALL">
+                    </div>
                     <ol class="sbitx-list-box"></ol>
                 </div>
                 <div id="wsjtx-rx" class="sbitx-list-container">
@@ -3128,6 +3135,9 @@
         // into a space and split a callsign like PJ4/K1ABC in two. Keep the
         // real text for the click handler.
         item.setAttribute('data-ft8text', deco_strip(text).trim());
+        // rows kept by the CQ filter: CQ calls, and anything to or from us
+        if (/wsjtx-cq-in-message|wsjtx-message-for-me|wsjtx-mycallsign|wsjtx-message-queued/.test(item.className))
+            item.classList.add("ft8-keep-in-cq");
         item.addEventListener("click", FT8_message_chosen);
 
         // De-duplication key: the SAME transmission arrives more than once with
@@ -3147,7 +3157,7 @@
             dedupeKey = stripped.substring(tildeAt).replace(/\s+/g, ' ').trim();
         item.setAttribute('data-ft8key', dedupeKey);
 
-        var listContainer = el(list_id).children[0];
+        var listContainer = el(list_id).querySelector("ol");
 
         // If a row with the same content key already exists in THIS list,
         // replace it in place (keeps styling/order current) instead of adding
@@ -3233,6 +3243,28 @@
                 websocket_send("FT8 " + normalized_text);
             }
         }
+    }
+
+    // CQ / All filter for the Band Activity list. The setting is the radio's
+    // FT8_FILTER field, so it is saved with the other settings and shared
+    // with the front panel; the radio echoes changes back into #FT8_FILTER.
+    function FT8_filter_apply() {
+        var v = el("FT8_FILTER").value == "CQ" ? "CQ" : "ALL";
+        var box = el("wsjtx-activity");
+        box.classList.toggle("ft8-cq-only", v == "CQ");
+        box.querySelectorAll(".ft8-filter-btn").forEach(function (b) {
+            var on = b.getAttribute("data-filter") == v;
+            b.classList.toggle("active", on);
+            b.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+        box.scrollTop = box.scrollHeight; // show the newest visible decodes
+    }
+
+    function FT8_filter_clicked(event) {
+        var v = event.currentTarget.getAttribute("data-filter");
+        el("FT8_FILTER").value = v;
+        FT8_filter_apply();
+        websocket_send("FT8_FILTER " + v);
     }
 
     function FT8_lists_clear() {
@@ -4161,6 +4193,8 @@
                             updateZerobeatDisplay(parseInt(args));
                         else if (cmd == 'SPLIT')
                             draw_dial();
+                        else if (cmd == "FT8_FILTER")
+                            FT8_filter_apply();
                         if (cmd == "REC") {
                             if (args == "ON")
                                 record_started = Math.round(Date.now() / 1000);
@@ -4205,6 +4239,7 @@
     $(".macro-btn").on("click", logger_trigger_macro);
 
     //ft8 specific handlers
+    $(".ft8-filter-btn").on("click", FT8_filter_clicked);
     //$(".ft8-clickable").on("click", FT8_message_chosen);
 
     //specific control handler

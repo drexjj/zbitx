@@ -539,6 +539,52 @@ input {
     box-sizing: border-box;
 }
 
+/* Band Activity header: title plus the All / CQ filter. Sticky so the
+   toggle stays reachable while the list scrolls. */
+.ft8-list-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 3px 6px;
+    background: #2a2a2a;
+    border-bottom: 1px solid #111;
+}
+
+.ft8-filter {
+    display: inline-flex;
+    border: 1px solid #555;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.ft8-filter-btn {
+    min-width: 3.2em;
+    padding: 2px 8px;
+    border: none;
+    background: #1a1a1a;
+    color: #999;
+    font: inherit;
+    font-size: 9pt;
+    cursor: pointer;
+}
+
+.ft8-filter-btn + .ft8-filter-btn {
+    border-left: 1px solid #555;
+}
+
+.ft8-filter-btn.active {
+    background: var(--accent-blue);
+    color: var(--primary-text);
+}
+
+/* CQ mode: hide everything except CQ calls and our own QSO */
+#wsjtx-activity.ft8-cq-only .sbitx-list-box li:not(.ft8-keep-in-cq) {
+    display: none;
+}
+
 .ft8-label {
     font-size: 9pt;
     display: inline-block;

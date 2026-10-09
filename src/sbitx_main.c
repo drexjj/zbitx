@@ -738,6 +738,11 @@ struct field main_controls[] = {
 	 "", 1, 10, 1, FT8_CONTROL},
 	{"#ft8_one_tap", NULL, 1000, -1000, 50, 50, "1-TAP", 40, "ON", FIELD_TOGGLE, FONT_FIELD_VALUE,
 	 "ON/OFF", 0, 0, 0, 0},
+	// FT8 decode list filter shared by the web UI and the front panel:
+	// ALL shows every decode, CQ shows only CQ calls plus anything to or
+	// from our own callsign
+	{"#ft8_filter", NULL, 1000, -1000, 50, 50, "FT8_FILTER", 40, "ALL", FIELD_SELECTION, FONT_FIELD_VALUE,
+	 "ALL/CQ", 0, 0, 0, 0},
 
 	{"#telneturl", NULL, 1000, -1000, 400, 149, "TELNETURL", 70, "dxc.nc7j.com:7373", FIELD_TEXT, FONT_SMALL,
 	 "", 0, 32, 1, 0},
