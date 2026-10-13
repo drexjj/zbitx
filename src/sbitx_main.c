@@ -1,3 +1,4 @@
+#include "hpsdr_p1.h"
 #include "cw_runtime.h"
 /*
 The initial sync between the gui values, the core radio values, settings, et al are manually set.
@@ -5968,6 +5969,8 @@ int main(int argc, char *argv[])
 
 	// hamlib_start();
 	initialize_hamlib();
+	if (hpsdr_init() < 0)
+		printf("hpsdr: UDP %d unavailable, continuing without HPSDR\n", HPSDR_PORT);
 	remote_start();
 	wifi_panel_init();
 	rtc_read();

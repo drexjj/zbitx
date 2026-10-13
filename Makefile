@@ -22,7 +22,8 @@ COMMON_SRC := \
 	src/i2c.c src/si5351v2.c src/ini.c src/hamlib.c src/queue.c src/modems.c src/logbook.c \
 	src/modem_cw.c src/cw_runtime.c src/radio_control.c src/hist_disp.c src/ntputil.c \
 	src/telnet.c src/macros.c src/modem_ft8.c src/remote.c src/mongoose.c src/para_eq.c \
-	src/webserver.c src/wifi_panel.c
+	src/webserver.c src/wifi_panel.c \
+	src/iq_baseband.c src/hpsdr_p1.c
 
 # FT8/FT4 codec: kgoba/ft8_lib (vendored in src/ft8_lib, upstream commit
 # 9fec6ca, which adds non-standard/compound callsign support). It is compiled
@@ -58,7 +59,7 @@ LIBS := -lwiringPi -lasound -lm -lfftw3 -lfftw3f -pthread -lncurses -lsqlite3 \
 	-lnsl -lrt -lssl -lcrypto
 
 # ---- Targets ----------------------------------------------------------------
-.PHONY: all zbitx dirs db clean distclean
+.PHONY: all zbitx dirs db clean distclean test-iq hpsdr-bench test-hpsdr
 
 all: zbitx
 
@@ -90,7 +91,25 @@ zbitx: db
 	@echo "Please consider a small donation as a token of thanks.."
 
 clean:
-	rm -f zbitx
+	rm -f zbitx tests/test_iq tests/hpsdr_bench
+
+# ---- Bench tests (no radio needed) -------------------------------------------
+# test-iq:     I/Q front end (iq_baseband.c) against synthetic IF tones
+# hpsdr-bench: the HPSDR server with a fake audio thread, for
+#              tests/hpsdr_client.py (or a real SDR app) to connect to
+# test-hpsdr:  runs hpsdr-bench and the client checks against it
+test-iq:
+	$(CC) -O2 -Wall -o tests/test_iq tests/test_iq_baseband.c src/iq_baseband.c -lm
+	./tests/test_iq
+
+hpsdr-bench:
+	$(CC) -O2 -Wall -o tests/hpsdr_bench tests/hpsdr_bench.c src/hpsdr_p1.c src/iq_baseband.c -lm -pthread
+
+test-hpsdr: hpsdr-bench
+	@./tests/hpsdr_bench 0 > tests/hpsdr_bench.log 2>&1 & pid=$$!; sleep 0.5; rc=0; \
+	python3 tests/hpsdr_client.py --host 127.0.0.1 --freq 7074000 --seconds 3 --expect-tone 3000 || rc=1; \
+	python3 tests/hpsdr_client.py --host 127.0.0.1 --rate 48000 --nrx 2 --seconds 2 --expect-tone 3000 || rc=1; \
+	kill $$pid; cat tests/hpsdr_bench.log; exit $$rc
 
 distclean: clean
 	rm -f *.gcda
