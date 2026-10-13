@@ -171,13 +171,36 @@ def main():
     spec = np.fft.fftshift(np.abs(np.fft.fft(z)) / (n / 2))
     freqs = np.fft.fftshift(np.fft.fftfreq(n, 1 / min(a.rate, 96000)))
     db = 20 * np.log10(spec + 1e-12)
-    k = int(np.argmax(db))
-    floor = float(np.median(db))
-    mirror = db[np.argmin(np.abs(freqs + freqs[k]))]
-    print(f"strongest signal {freqs[k]:+.0f} Hz from center at {db[k]:.1f} dBFS; "
-          f"mirror {mirror:.1f} dBFS; median floor {floor:.1f} dBFS")
+    rate = min(a.rate, 96000)
+    # Only the crystal filter's passband carries signal; beyond ~+-15 kHz is
+    # the I/Q lowpass's stopband, so the floor and peaks are measured inside.
+    inband = np.abs(freqs) <= min(12000, rate * 0.25)
+    fi, di = freqs[inband], db[inband]
+    k = int(np.argmax(di))
+    floor_bin = float(np.median(di))
+    bin_hz = rate / n
+    # Noise density from the median in-band bin. With the /(n/2) amplitude
+    # scaling a full-scale tone reads 0 dBFS; a Hann window's noise bandwidth
+    # is 1.5 bins, and the median of noise-only bins sits ~1.6 dB below the mean.
+    density = floor_bin + 1.6 - 10 * np.log10(1.5 * bin_hz)
+    quant = 20 * np.log10(1 / 8388607) + 10 * np.log10(2 / 12) - 10 * np.log10(rate)  # 24-bit I+Q, dBFS/Hz
+    mirror = di[np.argmin(np.abs(fi + fi[k]))]
+    print(f"strongest in-band signal {fi[k]:+.0f} Hz from center at {di[k]:.1f} dBFS; "
+          f"its mirror {mirror:.1f} dBFS")
+    # strongest few distinct peaks, for a quick look at the band
+    order = np.argsort(di)[::-1]
+    peaks = []
+    for j in order:
+        if all(abs(fi[j] - p) > 150 for p in peaks):
+            peaks.append(fi[j])
+        if len(peaks) == 6:
+            break
+    print("top peaks (Hz from center):", ", ".join(f"{p:+.0f}" for p in sorted(peaks)))
+    print(f"in-band noise floor {floor_bin:.1f} dBFS/bin ({bin_hz:.2f} Hz bins), "
+          f"about {density:.0f} dBFS/Hz; 24-bit quantization is {quant:.0f} dBFS/Hz, "
+          f"so the radio's noise sits {density - quant:.0f} dB above it")
     if a.expect_tone is not None:
-        if abs(freqs[k] - a.expect_tone) > 100:
+        if abs(fi[k] - a.expect_tone) > 100:
             print(f"FAIL: expected strongest signal at {a.expect_tone:+.0f} Hz")
             rc = 1
         else:
