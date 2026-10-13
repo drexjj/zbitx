@@ -24,7 +24,8 @@ ADC samples:
   center in the app.
 - The usable span is about 30 kHz, limited by the crystal filter. The I/Q is
   96 kHz wide, or 48 kHz if the app asks for that rate.
-- The DSP only runs while an app is connected. While transmitting, the app
+- The same I/Q feeds TCI's `iq_start` stream (see tci.md).
+- The DSP only runs while an HPSDR or TCI app is taking I/Q. While transmitting, the app
   receives silence, so the stream keeps its timing.
 
 ## Using it

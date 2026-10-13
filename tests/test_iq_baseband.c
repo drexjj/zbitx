@@ -17,6 +17,13 @@
 #include <stdlib.h>
 
 int hpsdr_is_connected(void) { return 1; }
+// TCI isn't part of this test
+int tci_iq_wanted(void) { return 0; }
+void tci_push_iq(const double *i, const double *q, int n) {
+  (void)i;
+  (void)q;
+  (void)n;
+}
 void hpsdr_send_iq(const double *i, const double *q, int n) {
   (void)i;
   (void)q;

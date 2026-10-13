@@ -23,7 +23,9 @@ COMMON_SRC := \
 	src/modem_cw.c src/cw_runtime.c src/radio_control.c src/hist_disp.c src/ntputil.c \
 	src/telnet.c src/macros.c src/modem_ft8.c src/remote.c src/mongoose.c src/para_eq.c \
 	src/webserver.c src/wifi_panel.c \
-	src/iq_baseband.c src/hpsdr_p1.c
+	src/iq_baseband.c src/hpsdr_p1.c \
+	src/tci.c src/tci_ws.c src/tci_stream.c src/tci_radio.c src/tci_audio.c \
+	src/decim48k.c src/upsample48k.c
 
 # FT8/FT4 codec: kgoba/ft8_lib (vendored in src/ft8_lib, upstream commit
 # 9fec6ca, which adds non-standard/compound callsign support). It is compiled
@@ -59,7 +61,7 @@ LIBS := -lwiringPi -lasound -lm -lfftw3 -lfftw3f -pthread -lncurses -lsqlite3 \
 	-lnsl -lrt -lssl -lcrypto
 
 # ---- Targets ----------------------------------------------------------------
-.PHONY: all zbitx dirs db clean distclean test-iq hpsdr-bench test-hpsdr
+.PHONY: all zbitx dirs db clean distclean test-iq hpsdr-bench test-hpsdr tci-bench test-tci test
 
 all: zbitx
 
@@ -91,13 +93,16 @@ zbitx: db
 	@echo "Please consider a small donation as a token of thanks.."
 
 clean:
-	rm -f zbitx tests/test_iq tests/hpsdr_bench
+	rm -f zbitx tests/test_iq tests/hpsdr_bench tests/tci_bench
 
 # ---- Bench tests (no radio needed) -------------------------------------------
 # test-iq:     I/Q front end (iq_baseband.c) against synthetic IF tones
 # hpsdr-bench: the HPSDR server with a fake audio thread, for
 #              tests/hpsdr_client.py (or a real SDR app) to connect to
 # test-hpsdr:  runs hpsdr-bench and the client checks against it
+# tci-bench:   the TCI server with a stub radio and fake audio thread
+# test-tci:    scripted TCI client sessions against tci-bench
+# test:        all of the above
 test-iq:
 	$(CC) -O2 -Wall -o tests/test_iq tests/test_iq_baseband.c src/iq_baseband.c -lm
 	./tests/test_iq
@@ -113,3 +118,14 @@ test-hpsdr: hpsdr-bench
 
 distclean: clean
 	rm -f *.gcda
+
+TCI_BENCH_SRC := tests/tci_bench.c src/tci.c src/tci_ws.c src/tci_stream.c src/tci_audio.c \
+	src/iq_baseband.c src/decim48k.c src/upsample48k.c
+
+tci-bench:
+	$(CC) -O2 -Wall -Wextra -o tests/tci_bench $(TCI_BENCH_SRC) -lm -pthread
+
+test-tci: tci-bench
+	python3 tests/tci_test.py
+
+test: test-iq test-hpsdr test-tci

@@ -20,6 +20,13 @@
 #define TONE_OFFSET_HZ 3000.0
 
 static int bench_in_tx = 0;
+// TCI isn't part of this test
+int tci_iq_wanted(void) { return 0; }
+void tci_push_iq(const double *i, const double *q, int n) {
+  (void)i;
+  (void)q;
+  (void)n;
+}
 int is_in_tx(void) { return bench_in_tx; }
 void cmd_exec(char *cmd) {
   printf("bench: cmd_exec(\"%s\")\n", cmd);

@@ -1,4 +1,5 @@
 #include "hpsdr_p1.h"
+#include "tci.h"
 #include "cw_runtime.h"
 /*
 The initial sync between the gui values, the core radio values, settings, et al are manually set.
@@ -2410,6 +2411,26 @@ void set_operating_freq(int dial_freq, char *response)
 	sdr_request(freq_request, response);
 }
 
+// Appends to the text the CW/digital sender keys from (TCI's cw_macros,
+// via tci_radio.c). UI thread only. Returns the characters appended.
+int tx_text_append(const char *s)
+{
+	struct field *f = get_field("#text_in");
+	if (!f || f->value[0] == COMMAND_ESCAPE)
+		return 0;
+	size_t len = strlen(f->value), n = 0;
+	while (s[n] && len + n < MAX_FIELD_LENGTH - 1 && len + n < (size_t)f->max)
+	{
+		f->value[len + n] = s[n];
+		n++;
+	}
+	f->value[len + n] = 0;
+	f->is_dirty = 1;
+	f->update_remote = 1;
+	f->updated_at = millis();
+	return (int)n;
+}
+
 void abort_tx()
 {
 	set_field("#text_in", "");
@@ -4384,6 +4405,12 @@ void ui_tick(void)
 
 	ticks++;
 
+	// changes TCI clients asked for (tci_radio.c), run here on the UI thread
+	{
+		extern void tci_radio_ui_tick(void);
+		tci_radio_ui_tick();
+	}
+
 	while (q_length(&q_remote_commands) > 0)
 	{
 		// read each command until the
@@ -5971,6 +5998,16 @@ int main(int argc, char *argv[])
 	initialize_hamlib();
 	if (hpsdr_init() < 0)
 		printf("hpsdr: UDP %d unavailable, continuing without HPSDR\n", HPSDR_PORT);
+	{
+		extern int tci_port;
+		extern char tci_bind[];
+		if (tci_port == 0)
+			printf("tci: off (tci_port=0)\n");
+		else if (tci_init(tci_bind, tci_port, TCI_DEFAULT_MAX_CLIENTS) < 0)
+			printf("tci: TCP %d unavailable, continuing without TCI\n", tci_port);
+		else
+			printf("tci: server listening on TCP %d\n", tci_port);
+	}
 	remote_start();
 	wifi_panel_init();
 	rtc_read();

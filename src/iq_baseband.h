@@ -34,7 +34,7 @@ void iq_baseband_set_offset(int offset_hz);
 void iq_baseband_set_swap(int swap);
 
 // Audio thread only. Converts one block of raw ADC samples to I/Q and hands
-// it to every I/Q consumer. While transmitting, pass in_tx=1: consumers get
+// it to every I/Q consumer (HPSDR, TCI). While transmitting, pass in_tx=1: consumers get
 // silence so their packet cadence never stalls.
 void iq_baseband_process(const int32_t *input_rx, int n, int in_tx);
 

@@ -7,6 +7,7 @@
 
 #include "iq_baseband.h"
 #include "hpsdr_p1.h"
+#include "tci.h"
 #include <complex.h>
 #include <math.h>
 #include <stdatomic.h>
@@ -129,7 +130,7 @@ void iq_baseband_process(const int32_t *input_rx, int n, int in_tx) {
     n = IQ_BB_MAX_BLOCK;
 
   // Nothing listening: skip the DSP entirely.
-  if (!hpsdr_is_connected())
+  if (!hpsdr_is_connected() && !tci_iq_wanted())
     return;
 
   if (in_tx) {
@@ -140,4 +141,5 @@ void iq_baseband_process(const int32_t *input_rx, int n, int in_tx) {
   }
 
   hpsdr_send_iq(bb_i, bb_q, n);
+  tci_push_iq(bb_i, bb_q, n);
 }

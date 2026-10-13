@@ -1,5 +1,6 @@
 #include "iq_baseband.h"
 #include "hpsdr_p1.h"
+#include "tci_audio.h"
 #include "cw_runtime.h"
 #include "radio_control.h"
 #include "modem_cw.h"
@@ -2147,9 +2148,11 @@ void sound_process(
 	int32_t *output_speaker, int32_t *output_tx,
 	int n_samples)
 {
-    // External I/Q (HPSDR). Independent of the demodulator below, so it
-    // runs even when the DSP lock is busy; silence while transmitting.
+    // External I/Q (HPSDR, TCI). Independent of the demodulator below, so
+    // it runs even when the DSP lock is busy; silence while transmitting.
     iq_baseband_process(input_rx, n_samples, in_tx);
+    // A TCI client transmitting its own audio replaces the mic input.
+    tci_audio_tx(input_mic, n_samples, in_tx);
 
     if (!radio_dsp_trylock()) {
         memset(output_speaker, 0, n_samples * sizeof(*output_speaker));
@@ -2171,6 +2174,7 @@ void sound_process(
 	{
 		wav_record(in_tx == 0 ? output_speaker : input_mic, n_samples);
 	}
+	tci_audio_rx(output_speaker, n_samples, in_tx);
     radio_dsp_unlock();
 }
 
@@ -2262,6 +2266,9 @@ static int hpsdr_allow_mox = 0;
 static double hpsdr_iq_gain_db = 0.0;
 static int hpsdr_board_id = 1;
 static int iq_swap = 0;
+// TCI server (tci.c); read by sbitx_main.c's startup
+int tci_port = 50001;
+char tci_bind[32] = "";
 
 static int hw_settings_handler(void *user, const char *section,
 							   const char *name, const char *value)
@@ -2298,6 +2305,10 @@ static int hw_settings_handler(void *user, const char *section,
 		hpsdr_board_id = atoi(value);
 	if (!strcmp(name, "iq_swap"))
 		iq_swap = atoi(value);
+	if (!strcmp(name, "tci_port"))
+		tci_port = atoi(value);
+	if (!strcmp(name, "tci_bind"))
+		snprintf(tci_bind, sizeof(tci_bind), "%s", value);
 	// Add TCXO Calibration W9JES/KK4DAS
 	if (!strcmp(section, "tcxo"))
 	{

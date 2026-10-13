@@ -198,7 +198,7 @@ def main():
     print("top peaks (Hz from center):", ", ".join(f"{p:+.0f}" for p in sorted(peaks)))
     print(f"in-band noise floor {floor_bin:.1f} dBFS/bin ({bin_hz:.2f} Hz bins), "
           f"about {density:.0f} dBFS/Hz; 24-bit quantization is {quant:.0f} dBFS/Hz, "
-          f"so the radio's noise sits {density - quant:.0f} dB above it")
+          f"so the radio's noise sits {abs(density - quant):.0f} dB {'above' if density >= quant else 'below'} it")
     if a.expect_tone is not None:
         if abs(fi[k] - a.expect_tone) > 100:
             print(f"FAIL: expected strongest signal at {a.expect_tone:+.0f} Hz")

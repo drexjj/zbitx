@@ -17,3 +17,5 @@ docs/Wiki-Resources/Disassembly
 tests/test_iq
 tests/hpsdr_bench
 tests/hpsdr_bench.log
+tests/tci_bench
+tests/__pycache__/
