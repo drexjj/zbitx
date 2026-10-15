@@ -66,6 +66,7 @@ static struct client clients[WS_MAX_CLIENTS];
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static struct state pub;
 static int tx_owner = -1; // slot whose trx holds TX, -1 none
+static int tx_owner_audio; // the owner keyed with trx:...,tci (its own audio)
 // tr_set_tx() returns before the radio switches, and zbitx's UI thread can
 // be busy for seconds (FFTW planning after a mode change). So ownership
 // follows what the radio does, not a timer: tx_want is the state we asked
@@ -176,8 +177,30 @@ static void snapshot(struct state *s) {
 static const char *tf(int b) { return b ? "true" : "false"; }
 
 // Each sends one piece of state to every client and records it as sent.
+// IF offset (TCI "if"): an SDR client such as SDR oxide keeps the I/Q
+// centre (dds) still and moves its VFO within it, and places its transmit
+// frequency the same way. zbitx has one oscillator, so the radio is tuned to
+// the VFO (dds + if) - where it demodulates and transmits - and TCI's I/Q is
+// shifted back (tci_stream_set_iq_shift()) so its centre stays on dds. A
+// dial change made elsewhere (panel, web, Hamlib) puts the VFO back on the
+// centre, if 0, which is how SDR oxide reads a rig's dial move.
+#define TCI_IF_MAX 48000
+static int if_hz;
+static int pending_dial = -1; // a dial frequency we asked for that may not show yet
+
+static void set_if(int hz) {
+  if_hz = hz;
+  tci_stream_set_iq_shift(hz);
+}
+
+static void tune_dial(int hz) {
+  pending_dial = hz;
+  tr_tune(hz);
+}
+
 static void pub_freq(const struct state *s) {
-  broadcast("dds:0,%d;", s->freq);
+  broadcast("dds:0,%d;", s->freq - if_hz);
+  broadcast("if:0,0,%d;", if_hz);
   broadcast("vfo:0,0,%d;", s->freq);
   broadcast("vfo:0,1,%d;", s->freq);
   pub.freq = s->freq;
@@ -221,8 +244,13 @@ static void pub_wpm(const struct state *s) {
 static void publish_changes(void) {
   struct state s;
   snapshot(&s);
-  if (s.freq != pub.freq)
+  if (s.freq != pub.freq) {
+    if (s.freq == pending_dial)
+      pending_dial = -1; // ours, landing late
+    else if (if_hz != 0)
+      set_if(0); // the dial was moved elsewhere
     pub_freq(&s);
+  }
   if (s.mode != pub.mode)
     pub_mode(&s);
   if (tx_want >= 0 && (s.tx == tx_want || now_ms() - tx_want_since_ms > TX_WANT_MAX_MS))
@@ -278,6 +306,7 @@ static void cmd_trx(int slot, int on, const char *source) {
       if (!own_audio)
         tci_stream_tx_end(); // this client's earlier trx may have had its own audio
       tx_owner = slot;
+      tx_owner_audio = own_audio;
       tx_seen_on = 0;
       printf("tci: client %d TX on (audio from %s)\n", slot,
              own_audio ? "its TCI stream" : "the loopback");
@@ -296,6 +325,8 @@ static void cmd_trx(int slot, int on, const char *source) {
     pub_tx(&s);
     return;
   }
+  if (!on)
+    tci_stream_tx_end_slot(slot); // its TX stream outlived a drop (see service_main)
   struct state s;
   snapshot(&s);
   pub_tx(&s);
@@ -459,7 +490,7 @@ static void handle(int slot, char *cmd) {
     parse_int(argv[1], &ch);
     if (argc >= 3) {
       if (ch == 0 && parse_int(argv[2], &v) && v >= TCI_VFO_MIN && v <= TCI_VFO_MAX)
-        tr_tune((int)v);
+        tune_dial((int)v); // the VFO moves; the centre follows, if unchanged
       snapshot(&s);
       pub_freq(&s); // echo, with the frequency in force
     } else {
@@ -467,18 +498,31 @@ static void handle(int slot, char *cmd) {
     }
   } else if (!strcmp(name, "dds") && trx0) {
     if (argc >= 2) {
-      if (parse_int(argv[1], &v) && v >= TCI_VFO_MIN && v <= TCI_VFO_MAX)
-        tr_tune((int)v);
+      if (parse_int(argv[1], &v) && v + if_hz >= TCI_VFO_MIN && v + if_hz <= TCI_VFO_MAX)
+        tune_dial((int)v + if_hz);
       snapshot(&s);
       pub_freq(&s);
     } else {
-      send_to(slot, "dds:0,%d;", tr_freq());
+      send_to(slot, "dds:0,%d;", tr_freq() - if_hz);
     }
   } else if (!strcmp(name, "if") && trx0 && argc >= 2) {
-    if (argc >= 3)
-      broadcast("if:0,%s,0;", argv[1]); // the offset is always 0
-    else
-      send_to(slot, "if:0,%s,0;", argv[1]);
+    long long ch = -1;
+    parse_int(argv[1], &ch);
+    if (argc >= 3) {
+      int dial = pending_dial >= 0 ? pending_dial : tr_freq();
+      int centre = dial - if_hz;
+      if (ch == 0 && parse_int(argv[2], &v) && v >= -TCI_IF_MAX && v <= TCI_IF_MAX &&
+          centre + v >= TCI_VFO_MIN && centre + v <= TCI_VFO_MAX) {
+        set_if((int)v);
+        tune_dial(centre + (int)v);
+      }
+      snapshot(&s);
+      pub_freq(&s);
+      if (ch != 0)
+        broadcast("if:0,%lld,0;", ch);
+    } else {
+      send_to(slot, "if:0,%lld,%d;", ch, ch == 0 ? if_hz : 0);
+    }
   } else if (!strcmp(name, "modulation") && trx0) {
     int m;
     if (argc >= 2 && mode_from_name(argv[1], &m))
@@ -688,8 +732,8 @@ static void send_init(int slot) {
   send_to(slot, "modulations_list:AM,LSB,USB,CW,CWR,DIGU;");
   send_to(slot, "iq_samplerate:%d;", clients[slot].cfg.iq_rate);
   send_to(slot, "audio_samplerate:%d;", clients[slot].cfg.audio_rate);
-  send_to(slot, "dds:0,%d;", s.freq);
-  send_to(slot, "if:0,0,0;");
+  send_to(slot, "dds:0,%d;", s.freq - if_hz);
+  send_to(slot, "if:0,0,%d;", if_hz);
   send_to(slot, "vfo:0,0,%d;", s.freq);
   send_to(slot, "vfo:0,1,%d;", s.freq);
   send_to(slot, "modulation:0,%s;", mode_name(s.mode));
@@ -805,12 +849,25 @@ static void *service_main(void *arg) {
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
     pthread_mutex_lock(&lock);
     tci_stream_service();
+    // trx holds TX in CW as on any rig, not just for the keyer's hang time
+    // (which can be shorter than the state tick): ask again every tick
+    if (tx_owner >= 0 && !tx_owner_audio && tx_want != 0 && cw_mode())
+      tr_cw_hold();
     if (tick % TCI_STATE_TICKS == 0) {
       if (tx_owner >= 0) {
+        int keyer_cw = !tx_owner_audio && (tr_mode() == TR_CW || tr_mode() == TR_CWR);
         if (tr_in_tx())
           tx_seen_on = 1;
-        else if (tx_seen_on && tx_want < 0 && !(tr_mode() == TR_CW || tr_mode() == TR_CWR))
-          tx_release_owner(); // TX dropped elsewhere (panel, Hamlib, timeout)
+        else if (tx_seen_on && tx_want < 0 && !keyer_cw) {
+          // TX dropped elsewhere (panel, Hamlib, timeout). The client no
+          // longer owns the radio, but it still believes it is keyed until
+          // it sends trx false: its TX stream keeps being paced with
+          // TX_CHRONO (its audio discarded, tci_audio.c), since clients
+          // such as SDR oxide stall without them.
+          printf("tci: client %d's TX dropped by the radio\n", tx_owner);
+          tci_stream_tx_orphan();
+          tx_owner = -1;
+        }
       }
       publish_changes();
       rx_sensors();

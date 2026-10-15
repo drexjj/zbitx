@@ -3235,6 +3235,9 @@ int do_bfo_offset(struct field *f, int event, int a, int b, int c)
 	return 0;
 }
 
+// Set only by tx_on_audio(): key through the normal T/R path even in CW.
+static int tx_on_force_audio;
+
 void tx_on(int trigger)
 {
 	char response[100];
@@ -3246,7 +3249,7 @@ void tx_on(int trigger)
 	}
 
 	struct field *f = get_field("r1:mode");
-    if (f && (!strcmp(f->value, "CW") || !strcmp(f->value, "CWR"))) {
+    if (f && !tx_on_force_audio && (!strcmp(f->value, "CW") || !strcmp(f->value, "CWR"))) {
         struct cw_config c;
         cw_ui_config(&c);
         cw_runtime_configure(&c);
@@ -3290,6 +3293,17 @@ void tx_on(int trigger)
 
 	tx_start_time = millis();
 	sound_reset(1);
+}
+
+// Keys for a TCI client that sends its own transmit audio (tci_radio.c).
+// Identical to tx_on(TX_SOFT) except in CW/CWR, where it bypasses the CW
+// keyer's runtime: the client's audio is the keyed signal (sbitx.c's
+// tx_process()), and TX holds until tx_off(), not the keyer's hang time.
+void tx_on_audio(void)
+{
+	tx_on_force_audio = 1;
+	tx_on(TX_SOFT);
+	tx_on_force_audio = 0;
 }
 
 int check_plugin_controls(void)

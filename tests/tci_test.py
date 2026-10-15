@@ -37,8 +37,8 @@ def check(ok, what, detail=""):
 class Bench:
     def __init__(self, tx_delay_ms=300):
         env = dict(os.environ, TCI_BENCH_TX_DELAY_MS=str(tx_delay_ms))
-        self.p = subprocess.Popen([os.path.join(HERE, "tci_bench"), str(PORT)], stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
+        self.p = subprocess.Popen([os.path.join(HERE, "tci_bench"), str(PORT)], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
         self.lines = []
         threading.Thread(target=self._read, daemon=True).start()
         for _ in range(50):
@@ -50,6 +50,13 @@ class Bench:
     def _read(self):
         for line in self.p.stdout:
             self.lines.append(line.rstrip())
+
+    def command(self, line):
+        self.p.stdin.write(line + "\n")
+        self.p.stdin.flush()
+
+    def count(self, text, since):
+        return sum(1 for l in self.lines[since:] if text in l)
 
     def mark(self):
         return len(self.lines)
@@ -138,6 +145,11 @@ def main():
     bench = Bench()
     try:
         run(bench)
+    finally:
+        bench.stop()
+    bench = Bench()
+    try:
+        run_sdroxide(bench)
     finally:
         bench.stop()
     bench = Bench(tx_delay_ms=2500)
@@ -332,6 +344,111 @@ def run(bench):
     check(bench.saw('radio: cw queued "TU K1ABC 5NN"', m), "cw_msg joins its parts")
     a.send("cw_macros_stop;")
     check(bench.saw("radio: cw stop", m) and a.expect("cw_macros_stop;"), "cw_macros_stop")
+    a.close()
+
+
+def keyed_sidetone(phase, n, pitch=600, wpm=20):
+    """n stereo frames of an on/off keyed tone, as SDR oxide sends CW."""
+    dot = int(48000 * 1.2 / wpm)
+    vals = []
+    for _ in range(n // 2):
+        t = phase[0]
+        on = (t // dot) % 2 == 0
+        v = 0.8 * math.sin(2 * math.pi * pitch * t / 48000) if on else 0.0
+        phase[0] += 1
+        vals += [v, v]
+    return vals
+
+
+def run_sdroxide(bench):
+    """SDR oxide's way: an SDR client keying CW as audio, tuning with if."""
+    print("-- SDR oxide style (CW as TCI audio, IF offset):")
+    a = Client()
+    a.drain()
+
+    # tuning: centre with dds, VFO with if
+    m = bench.mark()
+    a.send("dds:0,7000000;")
+    a.send("if:0,0,1500;")
+    check(a.expect("if:0,0,1500;") and a.expect("vfo:0,0,7001500;") and bench.saw("radio: freq 7001500", m),
+          "if offset: radio tuned to dds + if, echoed as the rig VFO")
+    a.drain()
+    a.send("dds:0;")
+    check(a.expect("dds:0,7000000;"), "dds still reads the centre")
+    iq = []
+
+    def on_iq(data, h):
+        if h["type"] == 0:
+            sm = samples(data, h)
+            iq.extend(complex(sm[k], sm[k + 1]) for k in range(0, len(sm) - 1, 2))
+
+    a.send("iq_samplerate:48000;iq_start:0;")
+    a.pump(1.2, on_iq)
+    a.send("iq_stop:0;")
+    hz = strongest(iq, 48000) if len(iq) >= 4096 else None
+    check(hz is not None and abs(hz - 3000) < 50,
+          "I/Q stays centred on dds (a signal 1500 Hz above the VFO shows at +3000)", f"{hz:+.0f} Hz" if hz else "none")
+
+    # keyboard CW: modulation cw, then trx with TCI audio carrying the keyed sidetone
+    a.drain()
+    a.send("modulation:0,cw;audio_start:0;")
+    a.pump(0.2)
+    m = bench.mark()
+    phase = [0]
+    answered = [0]
+
+    def on_chrono(data, h):
+        if h["type"] != 3:
+            return
+        out = bytearray(data[:64])
+        out[24:28] = struct.pack("<I", 2)
+        a.ws.send(bytes(out) + struct.pack(f"<{h['length']}f", *keyed_sidetone(phase, h["length"])), opcode=2)
+        answered[0] += 1
+
+    a.send("trx:0,true,tci;")
+    a.pump(3.0, on_chrono)
+    check(bench.saw("radio: tx 1 (tci audio)", m), "CW with TCI audio keys through the normal T/R path")
+    check(bench.saw("radio: tx is now 1", m) and not bench.saw("radio: tx is now 0", m, 0.0),
+          "...and stays keyed for the whole over (not just the keyer's hang time)")
+    line = bench.find("radio: tx audio rms", m)
+    check(line is not None, "the client's keyed sidetone reaches the transmitter", line or "none")
+    check(answered[0] > 3.0 * 48000 / 1024 - 15, "TX_CHRONO keeps pacing the client", f"{answered[0]} in 3 s")
+
+    # the radio drops TX under the client (panel, timeout): the client must not stall
+    m = bench.mark()
+    before = answered[0]
+    bench.command("drop")
+    a.pump(2.0, on_chrono)
+    check("trx:0,false;" in a.text, "a TX drop is reported to the client")
+    check(answered[0] - before > 2.0 * 48000 / 1024 - 15,
+          "TX_CHRONO keeps flowing after the radio drops TX (no client stall)", f"{answered[0] - before} in 2 s")
+    # ...and if the operator now keys with the mic, none of that client's audio goes out
+    m = bench.mark()
+    bench.command("key")
+    a.pump(2.3, on_chrono)
+    check(bench.saw("radio: tx is now 1", m) and not bench.saw("radio: tx audio rms", m, 0.0),
+          "an orphaned TCI stream never reaches the mic input of someone else's TX")
+    bench.command("drop")
+    a.send("trx:0,false;")
+    a.pump(0.5, on_chrono)
+    a.drain()
+
+    # CW keyed without TCI audio (trx alone): TX is held while trx is
+    m = bench.mark()
+    a.send("trx:0,true;")
+    a.pump(1.6)
+    check(bench.saw("radio: cw hold", m), "trx without audio in CW keeps asking the keyer to hold TX")
+    a.send("trx:0,false;")
+    a.pump(0.3)
+    m = bench.mark()
+    a.pump(1.2)
+    check(not bench.saw("radio: cw hold", m, 0.0), "...and stops when trx goes false")
+
+    # a dial move on the panel puts the VFO back on the centre
+    a.drain()
+    bench.command("tune 7100000")
+    check(a.expect("if:0,0,0;", 1.0) and a.expect("dds:0,7100000;") and a.expect("vfo:0,0,7100000;"),
+          "a panel dial move resets if to 0 and moves the centre with it")
     a.close()
 
 

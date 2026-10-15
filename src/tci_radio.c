@@ -29,6 +29,9 @@ int is_in_tx(void);
 int calculate_s_meter(struct rx *r, double rx_gain);
 int get_rx_gain(void);
 void abort_tx(void);
+void tx_on_audio(void);
+void cw_runtime_request_tx(void);
+int cw_tx_text_busy(void);
 int tx_text_append(const char *s);
 int get_tx_data_length(void);
 #define TX_SOFT 2
@@ -101,6 +104,14 @@ static void ui_run(enum ui_op op, int n, const char *a, const char *b) {
   ui_run_wait(op, n, a, b, 1);
 }
 
+// UI thread only: how the current transmission was keyed.
+static int tx_audio_keyed;
+
+static int ui_cw_mode(void) {
+  const char *m = field_str("MODE");
+  return m && (!strcmp(m, "CW") || !strcmp(m, "CWR"));
+}
+
 // UI thread: called from ui_tick().
 void tci_radio_ui_tick(void) {
   for (;;) {
@@ -122,17 +133,31 @@ void tci_radio_ui_tick(void) {
       snprintf(cmd, sizeof(cmd), "mode %s", c.a);
       cmd_exec(cmd);
       break;
-    case OP_TX_ON_TCI: // audio from tci_audio.c, which overwrites the mic input
+    case OP_TX_ON_TCI:
+      // audio from tci_audio.c, which overwrites the mic input; in CW too
+      // (the client's own keyed sidetone), so through the normal T/R path
       sound_input(0);
-      tx_on(TX_SOFT);
+      tx_on_audio();
+      tx_audio_keyed = 1;
       break;
-    case OP_TX_ON_LOOP: // as Hamlib PTT: audio from the ALSA loopback
-      sound_input(1);
-      tx_on(TX_SOFT);
+    case OP_TX_ON_LOOP:
+      if (ui_cw_mode()) {
+        tx_on(TX_SOFT); // the keyer's runtime; tr_cw_hold() keeps it up
+      } else {
+        sound_input(1); // as Hamlib PTT: audio from the ALSA loopback
+        tx_on(TX_SOFT);
+      }
+      tx_audio_keyed = 0;
       break;
     case OP_TX_OFF:
-      sound_input(0);
-      tx_off();
+      // In CW keyed by the keyer's runtime, just stop holding: text still
+      // being sent finishes, and the keyer drops TX after its hang time.
+      // tx_off() would abort the text mid-character.
+      if (tx_audio_keyed || !ui_cw_mode()) {
+        sound_input(0);
+        tx_off();
+      }
+      tx_audio_keyed = 0;
       break;
     case OP_FIELD:
       field_set(c.a, c.b);
@@ -262,7 +287,13 @@ void tr_cw_stop(void) {
   ui_run(OP_CW_STOP, 0, NULL, NULL);
 }
 
-int tr_cw_pending(void) { return cw_len + get_tx_data_length(); }
+// Characters still to key: TCI's own queue, the text box, and whatever the
+// keyer has taken but not finished (counted as one).
+int tr_cw_pending(void) { return cw_len + get_tx_data_length() + (cw_tx_text_busy() ? 1 : 0); }
+
+// The keyer's runtime drops TX after its hang time unless asked again;
+// called every service tick while a TCI client holds TX in CW without audio.
+void tr_cw_hold(void) { cw_runtime_request_tx(); }
 
 void tr_cw_service(void) {
   if (!cw_len || (tr_mode() != TR_CW && tr_mode() != TR_CWR))

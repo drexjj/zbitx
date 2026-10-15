@@ -365,6 +365,14 @@ static char echo_queue[CW_TEXT_SIZE];
 static atomic_uint text_write, text_read, echo_write, echo_read;
 static unsigned audio_epoch;
 static int text_count(void) { return atomic_load(&text_write) - atomic_load(&text_read); }
+
+// Nonzero while text handed to the keyer is still queued or being keyed,
+// through the last element's release. Read from other threads (TCI's
+// cw_macros_empty), so a momentary stale value is fine.
+int cw_tx_text_busy(void) {
+  return text_count() > 0 || symbol_next != NULL || cw_next_symbol_flag ||
+         keydown_count > 0 || keyup_count > 0 || cw_envelope_pos > 0;
+}
 static int text_pop(char *c) {
     unsigned r = atomic_load(&text_read);
     unsigned w = atomic_load(&text_write);

@@ -106,6 +106,15 @@ static int tx_use_line = 0;
 struct rx *rx_list = NULL;
 struct rx *tx_list = NULL;
 struct filter *tx_filter; // convolution filter
+
+// Set by sound_process() for each block while a TCI client is transmitting
+// its own audio (tci_audio_tx() filled input_mic). In CW/CWR, tx_process()
+// then sends that audio - the client's keyed, shaped sidetone, as SDR oxide
+// sends it - instead of zbitx's keyer.
+static int tx_from_tci_audio = 0;
+// Full-scale TCI audio maps to the keyer's key-down level
+// (cw_tx_get_sample()'s 1/8, then /3 below).
+#define TCI_CW_AUDIO_SCALE (1.0 / 24.0)
 static double tx_amp = 0.0;
 static double alc_level = 1.0;
 static int tr_relay = 0;
@@ -1833,6 +1842,8 @@ void tx_process(
 			i_sample = (1.0 * (vfo_read(&tone_a) + vfo_read(&tone_b))) / 50000000000.0;
 		else if (r->mode == MODE_CALIBRATE)
 			i_sample = (1.0 * (vfo_read(&tone_a))) / 30000000000.0;
+		else if ((r->mode == MODE_CW || r->mode == MODE_CWR) && tx_from_tci_audio)
+			i_sample = (1.0 * input_mic[j]) / 2147483647.0 * TCI_CW_AUDIO_SCALE;
 		else if (r->mode == MODE_CW || r->mode == MODE_CWR || r->mode == MODE_FT8)
 			i_sample = modem_next_sample(r->mode) / 3;
 		else if (r->mode == MODE_AM)
@@ -2152,7 +2163,7 @@ void sound_process(
     // it runs even when the DSP lock is busy; silence while transmitting.
     iq_baseband_process(input_rx, n_samples, in_tx);
     // A TCI client transmitting its own audio replaces the mic input.
-    tci_audio_tx(input_mic, n_samples, in_tx);
+    tx_from_tci_audio = tci_audio_tx(input_mic, n_samples, in_tx);
 
     if (!radio_dsp_trylock()) {
         memset(output_speaker, 0, n_samples * sizeof(*output_speaker));

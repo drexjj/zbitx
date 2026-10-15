@@ -50,5 +50,6 @@ int tr_cw_send(const char *text);  // returns characters accepted
 void tr_cw_stop(void);
 int tr_cw_pending(void);           // characters not yet keyed
 void tr_cw_service(void);          // every TCI service tick
+void tr_cw_hold(void);             // keep CW TX keyed (trx held, no TCI audio)
 
 #endif

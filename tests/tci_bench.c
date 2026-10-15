@@ -127,6 +127,19 @@ void tr_cw_stop(void) {
   printf("radio: cw stop\n");
 }
 int tr_cw_pending(void) { return r_cw_len; }
+// The keyer's runtime drops TX unless asked again; the bench just counts
+// the requests and reports them once a second.
+static long cw_holds;
+static long long cw_hold_report_ms;
+void tr_cw_hold(void) {
+  cw_holds++;
+  long long now = ms_now();
+  if (now - cw_hold_report_ms >= 1000) {
+    printf("radio: cw hold x%ld\n", cw_holds);
+    cw_holds = 0;
+    cw_hold_report_ms = now;
+  }
+}
 void tr_cw_service(void) {
   long long now = ms_now();
   if (r_cw_len && now >= cw_next_ms) {
@@ -185,6 +198,32 @@ static void *audio_main(void *arg) {
   return NULL;
 }
 
+// Commands on stdin act as the radio's own controls would:
+//   drop      TX drops on its own (panel, timeout) while a client holds it
+//   key       the operator keys (mic PTT)
+//   tune HZ   the dial is moved from the panel
+static void *stdin_main(void *arg) {
+  (void)arg;
+  char line[64];
+  while (fgets(line, sizeof(line), stdin)) {
+    if (!strncmp(line, "drop", 4)) {
+      tx_q[tx_q_head % 64].on = 0;
+      tx_q[tx_q_head % 64].at_ms = 0;
+      tx_q_head++;
+      printf("radio: dropped TX on its own\n");
+    } else if (!strncmp(line, "key", 3)) {
+      tx_q[tx_q_head % 64].on = 1;
+      tx_q[tx_q_head % 64].at_ms = 0;
+      tx_q_head++;
+      printf("radio: keyed by the operator (mic PTT)\n");
+    } else if (!strncmp(line, "tune ", 5)) {
+      r_freq = atoi(line + 5);
+      printf("radio: dial moved to %d on the panel\n", r_freq);
+    }
+  }
+  return NULL;
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IOLBF, 0);
   int port = argc > 1 ? atoi(argv[1]) : TCI_DEFAULT_PORT;
@@ -198,6 +237,8 @@ int main(int argc, char **argv) {
   }
   pthread_t t;
   pthread_create(&t, NULL, audio_main, NULL);
+  pthread_t t2;
+  pthread_create(&t2, NULL, stdin_main, NULL);
   printf("bench: TCI on 127.0.0.1:%d\n", port);
   for (;;)
     pause();

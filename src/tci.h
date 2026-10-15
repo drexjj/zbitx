@@ -45,6 +45,10 @@ int tci_iq_wanted(void);
 // than the mic or the loopback.
 int tci_tx_audio_owned(void);
 
+// Nonzero while that client still owns TX; zero once the radio dropped TX
+// under it (the stream is then only paced, never transmitted).
+int tci_tx_audio_on_air(void);
+
 // Up to n transmit samples at 48 kHz, about +-1 full scale; fewer (0 if
 // none) rather than waiting.
 int tci_pull_audio_tx(double *out, int n);

@@ -10,7 +10,11 @@
 // input block before tx_process() reads it - at the loopback's full-scale
 // level, so a client's power setting means what it does through the
 // loopback. Between the client keying and zbitx actually switching to TX
-// (tx_on() takes a while), its audio waits in the queue.
+// (tx_on() takes a while), its audio waits in the queue - for up to
+// TX_HOLD_MAX_SAMPLES. Past that (the radio never keyed, or dropped TX
+// under the client) the audio is consumed and discarded at the real-time
+// rate, so the client keeps getting TX_CHRONO requests: clients such as
+// SDR oxide pace their transmit audio by them and stall without them.
 
 #pragma GCC optimize("O2") // zbitx's default build is -O0; this runs per sample
 
@@ -25,6 +29,7 @@
 #define RX_AUDIO_SCALE (0.178 / 100000000.0)
 
 #define TX_FULL_SCALE 2147483647.0
+#define TX_HOLD_MAX_SAMPLES (96000 * 3 / 4) // 750 ms of 96 kHz blocks
 
 void tci_audio_rx(const int32_t *speaker, int n, int in_tx) {
   static struct decim48k_state dec;
@@ -45,17 +50,28 @@ void tci_audio_rx(const int32_t *speaker, int n, int in_tx) {
 int tci_audio_tx(int32_t *mic, int n, int in_tx) {
   static struct upsample48k_state up;
   static double buf48[TCI_AUDIO_MAX_BLOCK / 2];
+  static long held; // 96 kHz samples spent waiting for the radio to key
   if (!tci_tx_audio_owned()) {
     tci_tx_audio_idle();
     memset(&up, 0, sizeof(up));
+    held = 0;
     return 0;
   }
-  if (!in_tx)
-    return 0; // keyed but the radio is still switching: keep the client's
-              // audio queued (tci_stream.c stops asking once it has enough)
-              // so the transmission starts from its beginning
   if (n > TCI_AUDIO_MAX_BLOCK)
     n = TCI_AUDIO_MAX_BLOCK;
+  int on_air = tci_tx_audio_on_air();
+  if (!in_tx || !on_air) {
+    if (on_air && held < TX_HOLD_MAX_SAMPLES) {
+      held += n; // the radio is still switching: keep the audio queued
+      return 0;
+    }
+    // Not transmitting this client (it never keyed, the radio dropped TX
+    // under it, or someone else holds TX): consume at the real-time rate so
+    // the client stays paced, and leave the mic input alone.
+    tci_pull_audio_tx(buf48, n / 2);
+    return 0;
+  }
+  held = TX_HOLD_MAX_SAMPLES; // once on the air, a later drop doesn't hold again
   int want = n / 2;
   int got = tci_pull_audio_tx(buf48, want);
   for (int k = got; k < want; k++)

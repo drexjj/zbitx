@@ -44,6 +44,11 @@ void tci_stream_set(int slot, const struct tci_stream_cfg *cfg);
 // requested ahead; end stops both.
 void tci_stream_tx_begin(int slot, int buffering_ms);
 void tci_stream_tx_end(void);
+// tci_stream_tx_end(), if slot is the client whose audio it is.
+void tci_stream_tx_end_slot(int slot);
+// The radio dropped TX under the stream's client: keep pacing it with
+// TX_CHRONO (its audio is consumed and discarded), but never transmit it.
+void tci_stream_tx_orphan(void);
 
 // A binary frame from a client. TX audio from the client that holds TX is
 // queued for the audio thread; anything else is dropped.
@@ -53,5 +58,9 @@ void tci_stream_tx_frame(int slot, const uint8_t *frame, size_t len);
 // that have accumulated, and TX_CHRONO frames as the audio thread uses up
 // transmit audio.
 void tci_stream_service(void);
+
+// Shifts the I/Q TCI clients get up by hz (tci.c's IF offset: the radio is
+// tuned hz above the centre clients expect). Any thread.
+void tci_stream_set_iq_shift(int hz);
 
 #endif /* TCI_STREAM_H */

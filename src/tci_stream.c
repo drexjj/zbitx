@@ -53,6 +53,8 @@ static float iq_ring[2 * IQ_RING];
 static float tx_ring[TX_RING];
 static atomic_uint rx_head, rx_tail, iq_head, iq_tail, tx_head, tx_tail;
 static atomic_int want_rx, want_iq, tx_owned;
+static atomic_int tx_on_air; // the stream's client owns TX (not orphaned by a drop)
+static atomic_int iq_shift_hz; // tci_stream_set_iq_shift()
 
 /* ---- Audio thread ------------------------------------------------------ */
 
@@ -77,16 +79,43 @@ void tci_push_iq(const double *i_samples, const double *q_samples, int n) {
   unsigned room = IQ_RING - (head - tail);
   if ((unsigned)n > room)
     n = (int)room;
+  // tci.c's IF offset: rotate by +shift so the client's centre lands at DC
+  static int shift_for = 0;
+  static double rot_re = 1.0, rot_im = 0.0, step_re = 1.0, step_im = 0.0;
+  int shift = atomic_load_explicit(&iq_shift_hz, memory_order_relaxed);
+  if (shift != shift_for) {
+    shift_for = shift;
+    step_re = cos(2.0 * M_PI * shift / 96000.0);
+    step_im = sin(2.0 * M_PI * shift / 96000.0);
+  }
   for (int k = 0; k < n; k++) {
     unsigned at = (head + (unsigned)k) & (IQ_RING - 1);
-    iq_ring[2 * at] = (float)i_samples[k];
-    iq_ring[2 * at + 1] = (float)q_samples[k]; // iq_baseband.c's I/Q is already the right way up
+    double i = i_samples[k], q = q_samples[k]; // iq_baseband.c's I/Q is already the right way up
+    if (shift) {
+      double ri = i * rot_re - q * rot_im;
+      q = i * rot_im + q * rot_re;
+      i = ri;
+      double nr = rot_re * step_re - rot_im * step_im;
+      rot_im = rot_re * step_im + rot_im * step_re;
+      rot_re = nr;
+    }
+    iq_ring[2 * at] = (float)i;
+    iq_ring[2 * at + 1] = (float)q;
+  }
+  if (shift) { // keep the rotator on the unit circle
+    double mag = sqrt(rot_re * rot_re + rot_im * rot_im);
+    rot_re /= mag;
+    rot_im /= mag;
   }
   atomic_store_explicit(&iq_head, head + (unsigned)n, memory_order_release);
 }
 
+void tci_stream_set_iq_shift(int hz) { atomic_store_explicit(&iq_shift_hz, hz, memory_order_relaxed); }
+
 int tci_rx_audio_wanted(void) { return atomic_load_explicit(&want_rx, memory_order_relaxed); }
 int tci_iq_wanted(void) { return atomic_load_explicit(&want_iq, memory_order_relaxed); }
+
+int tci_tx_audio_on_air(void) { return atomic_load_explicit(&tx_on_air, memory_order_relaxed); }
 
 int tci_tx_audio_owned(void) { return atomic_load_explicit(&tx_owned, memory_order_relaxed); }
 
@@ -431,11 +460,20 @@ void tci_stream_tx_begin(int slot, int buffering_ms) {
   tx.buffering_ms = buffering_ms;
   tx.outstanding = 0;
   tx.last_ns = now_ns();
+  atomic_store(&tx_on_air, 1);
   atomic_store(&tx_owned, 1);
+}
+
+void tci_stream_tx_orphan(void) { atomic_store(&tx_on_air, 0); }
+
+void tci_stream_tx_end_slot(int slot) {
+  if (tx.active && tx.slot == slot)
+    tci_stream_tx_end();
 }
 
 void tci_stream_tx_end(void) {
   tx.active = 0;
+  atomic_store(&tx_on_air, 0);
   atomic_store(&tx_owned, 0);
 }
 
