@@ -2,9 +2,10 @@
 # Equivalent to the shell build script.
 #
 # Usage:
-#   make                 # build zbitx (debug, default)
-#   make zbitx           # build zbitx (debug)
-#   make OPT=o zbitx     # optimized build (-march=native -O3 -flto)
+#   make                 # build zbitx (optimized, default)
+#   make zbitx           # build zbitx (optimized, default)
+#   make OPT=o zbitx     # optimized build (-march=native -O3 -flto), same as default
+#   make OPT=d zbitx     # debug build (-g, no optimization)
 #   make OPT=g zbitx     # profile-generate build
 #   make OPT=u zbitx     # profile-use build
 #   make clean           # remove binaries
@@ -37,11 +38,17 @@ FT8_SRC := \
 	src/ft8_lib/ft8/text.c src/ft8_lib/fft/kiss_fft.c src/ft8_lib/fft/kiss_fftr.c
 
 # ---- Flags ------------------------------------------------------------------
-# Default (debug) flags. Override the optimization mode with OPT=o|g|u.
+# Optimization mode: o (optimized, default), d (debug), g (profile-generate),
+# u (profile-use). Override on the command line, e.g. make OPT=d.
+OPT         ?= o
 FLAGS       := -g
 EXTRA_CFLAGS :=
 STRIP_BIN   := no
 
+ifeq ($(OPT),d)
+	FLAGS     := -g
+	STRIP_BIN := no
+endif
 ifeq ($(OPT),o)
 	FLAGS     := -march=native -O3 -flto=auto
 	STRIP_BIN := yes

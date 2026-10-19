@@ -29,7 +29,8 @@ git checkout main
 # ft8_lib is compiled as part of the main build below
 cd $HOME/sbitx/
 make clean
-make
+# Optimized build (-march=native -O3 -flto); use 'make OPT=d' for a debug build
+make OPT=o
 echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
 
 echo "zbitx software has been installed successfully. You can now close this window."
