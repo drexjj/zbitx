@@ -23,7 +23,7 @@ COMMON_SRC := \
 	src/i2c.c src/si5351v2.c src/ini.c src/hamlib.c src/queue.c src/modems.c src/logbook.c \
 	src/modem_cw.c src/cw_runtime.c src/radio_control.c src/hist_disp.c src/ntputil.c \
 	src/telnet.c src/macros.c src/modem_ft8.c src/remote.c src/mongoose.c src/para_eq.c \
-	src/webserver.c src/wifi_panel.c \
+	src/webserver.c src/wifi_panel.c src/update_panel.c \
 	src/iq_baseband.c src/hpsdr_p1.c \
 	src/tci.c src/tci_ws.c src/tci_stream.c src/tci_radio.c src/tci_audio.c \
 	src/decim48k.c src/upsample48k.c

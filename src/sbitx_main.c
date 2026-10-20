@@ -44,6 +44,7 @@ The initial sync between the gui values, the core radio values, settings, et al 
 #include "hamlib.h"
 #include "remote.h"
 #include "wifi_panel.h"
+#include "update_panel.h"
 #include "modem_ft8.h"
 #include "i2cbb.h"
 #include "webserver.h"
@@ -4319,6 +4320,9 @@ void zbitx_poll(int all){
 	 * produced. Main-thread-only I2C write, same as everything else here. */
 	wifi_panel_poll();
 
+	/* Push software-update versions/progress to the panel (MENU -> UPDATE). */
+	update_panel_poll();
+
 	/*  this block printed zbitx_poll() timing data during debug
 	clock_gettime(CLOCK_MONOTONIC, &_zp_t1);
 	long _zp_us = (_zp_t1.tv_sec - _zp_t0.tv_sec) * 1000000L
@@ -5507,34 +5511,23 @@ void cmd_exec(char *cmd)
 		save_user_settings(1);
 		system("sudo /sbin/shutdown -h now");
 	}
+	// UPDCHECK / UPDATE: the front panel's MENU -> UPDATE screen. UPDCHECK
+	// asks for the installed and available versions; UPDATE is sent once the
+	// user confirms. update_panel.c runs git and the build in the background
+	// and keeps the panel locked on its update screen until the radio has
+	// rebooted into the new software.
+	else if (!strcmp(exec, "UPDCHECK"))
+	{
+		update_panel_check(VER_STR);
+	}
 	else if (!strcmp(exec, "UPDATE"))
 	{
-		// Sent by the front panel's MENU -> UPDATE button after the user
-		// confirmed. Runs ~/sbitx/update (git pull + make) in its own session
-		// so it survives this process, logs to data/update.log, and reboots
-		// only if the build succeeded. A failed build leaves the radio running
-		// the old binary until the next restart.
-		static int update_started = 0;
-		if (update_started) {
-			write_console(FONT_LOG, "Update already running...\n");
-		} else {
-			update_started = 1;
+		if (!update_panel_running()) {
 			tx_off();
 			save_user_settings(1);
-			write_console(FONT_LOG,
-				"Updating zBitx software. This takes several minutes; "
-				"the radio reboots when done.\n");
-			int rc = system(
-				"setsid sh -c 'cd /home/pi/sbitx && "
-				"HOME=/home/pi ./update > /home/pi/sbitx/data/update.log 2>&1 "
-				"&& sudo /sbin/reboot "
-				"|| echo UPDATE FAILED >> /home/pi/sbitx/data/update.log' "
-				"< /dev/null > /dev/null 2>&1 &");
-			if (rc != 0) {
-				update_started = 0;
-				write_console(FONT_LOG, "Could not start the update script\n");
-			}
+			write_console(FONT_LOG, "Updating zBitx software. The radio reboots when done.\n");
 		}
+		update_panel_start();
 	}
 	// NOTE: the front panel no longer opens the GTK settings dialog. Its SETUP
 	// screen sets MYCALLSIGN/MYGRID/PASSKEY directly (each field posts its own
