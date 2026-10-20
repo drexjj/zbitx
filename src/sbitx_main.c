@@ -5507,6 +5507,35 @@ void cmd_exec(char *cmd)
 		save_user_settings(1);
 		system("sudo /sbin/shutdown -h now");
 	}
+	else if (!strcmp(exec, "UPDATE"))
+	{
+		// Sent by the front panel's MENU -> UPDATE button after the user
+		// confirmed. Runs ~/sbitx/update (git pull + make) in its own session
+		// so it survives this process, logs to data/update.log, and reboots
+		// only if the build succeeded. A failed build leaves the radio running
+		// the old binary until the next restart.
+		static int update_started = 0;
+		if (update_started) {
+			write_console(FONT_LOG, "Update already running...\n");
+		} else {
+			update_started = 1;
+			tx_off();
+			save_user_settings(1);
+			write_console(FONT_LOG,
+				"Updating zBitx software. This takes several minutes; "
+				"the radio reboots when done.\n");
+			int rc = system(
+				"setsid sh -c 'cd /home/pi/sbitx && "
+				"HOME=/home/pi ./update > /home/pi/sbitx/data/update.log 2>&1 "
+				"&& sudo /sbin/reboot "
+				"|| echo UPDATE FAILED >> /home/pi/sbitx/data/update.log' "
+				"< /dev/null > /dev/null 2>&1 &");
+			if (rc != 0) {
+				update_started = 0;
+				write_console(FONT_LOG, "Could not start the update script\n");
+			}
+		}
+	}
 	// NOTE: the front panel no longer opens the GTK settings dialog. Its SETUP
 	// screen sets MYCALLSIGN/MYGRID/PASSKEY directly (each field posts its own
 	// command), so there is no "SETUP"/"SETUPCLOSE" handshake here anymore.
