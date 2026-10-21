@@ -41,12 +41,33 @@
 #define UPD_RUN_SH      UPD_WORK_DIR "/run.sh"
 #define UPD_RESULT_FILE UPD_WORK_DIR "/result"
 #define UPD_LOG_FILE    UPD_WORK_DIR "/update.log"
+#define UPD_PANEL_DIR   UPD_WORK_DIR "/panel"            /* zbitxfrontpanel clone */
+#define UPD_PANEL_VER   UPD_WORK_DIR "/panel_installed"  /* from the panel */
+#ifndef UPD_PANEL_REPO
+#define UPD_PANEL_REPO  "https://github.com/drexjj/zbitxfrontpanel"
+#endif
+
+/* Shell: bring the front-panel repo up to date (shallow) in UPD_PANEL_DIR,
+ * then set $u to the newest .uf2 in its build folder. Panel releases are published there
+ * as zbitxfrontpanel.v<version>.uf2, so a version sort picks the latest. */
+#define PANEL_FETCH_SH \
+	"P=" UPD_PANEL_DIR "\n" \
+	"if [ -d $P/.git ]; then\n" \
+	"  (cd $P && timeout 120 git fetch -q --depth 1 origin main && git reset -q --hard FETCH_HEAD)\n" \
+	"else\n" \
+	"  rm -rf $P && timeout 120 git clone -q --depth 1 " UPD_PANEL_REPO " $P\n" \
+	"fi\n" \
+	"pf=$?\n" \
+	"u=$(ls $P/build/*.uf2 2>/dev/null | sort -V | tail -n 1)\n"
 /* How the log path is shown on the panel. */
 #define UPD_LOG_SHOWN   "~/.zbitx_update/update.log"
 
-/* Fetch the branch this install is on and report the version it would get.
- * Writes one line, "OK|<version>|<commits behind>" or "ERR", via a temp file
- * so the poller never reads a half-written result. */
+/* Fetch the branch this install is on and report the version it would get,
+ * and the newest published front-panel firmware. Writes one line,
+ * "OK|<version>|<commits behind>|<panel>" or "ERR", via a temp file so the
+ * poller never reads a half-written result. <panel> is the panel version,
+ * "-" if the published panel image can't be installed over I2C, or empty if
+ * unknown (no download, or no zbitx-panel-flash yet). */
 static const char *check_script =
 	"#!/bin/sh\n"
 	"cd " UPD_SBITX_DIR " || { echo ERR > " UPD_CHECK_FILE "; exit 0; }\n"
@@ -55,29 +76,60 @@ static const char *check_script =
 	"if timeout 60 git fetch -q origin \"$b\" >/dev/null 2>&1; then\n"
 	"  v=$(git show FETCH_HEAD:src/sdr_ui.h | grep 'define VER_STR' | head -n 1 | cut -d'\"' -f2)\n"
 	"  n=$(git rev-list --count HEAD..FETCH_HEAD)\n"
-	"  echo \"OK|${v:-unknown}|${n:-?}\" > $t\n"
+	PANEL_FETCH_SH
+	"  pv=''\n"
+	"  if [ -n \"$u\" ] && [ -x ./zbitx-panel-flash ]; then\n"
+	"    pv=$(./zbitx-panel-flash --info \"$u\" 2>/dev/null) || pv=-\n"
+	"  fi\n"
+	"  echo \"OK|${v:-unknown}|${n:-?}|$pv\" > $t\n"
 	"else\n"
 	"  echo ERR > $t\n"
 	"fi\n"
 	"mv -f $t " UPD_CHECK_FILE "\n";
 
-/* Run the stock update script, record the outcome, reboot on success.
- * NOBIN means the build failed after `make clean` removed the binary, so the
- * radio would not start again if it were restarted now. */
+/* The whole update, run detached:
+ *  1. the stock update script (git pull + build). On failure: FAIL, or NOBIN
+ *     if the build failed after `make clean` removed the binary (the radio
+ *     would not start again if it were restarted now).
+ *  2. the front panel: fetch the newest published panel firmware; if it can
+ *     be installed over I2C and differs from what the panel runs, stop the
+ *     zBitx app (it owns the panel's I2C traffic) and send it with
+ *     zbitx-panel-flash, which also tells the panel's lock screen when the
+ *     panel isn't flashed. Otherwise "OK <reason>" tells the app, still
+ *     running, why the panel was left alone.
+ *  3. reboot.
+ * The result file drives what the app shows (see update_panel_poll()). */
 static const char *run_script =
 	"#!/bin/sh\n"
-	"cd " UPD_SBITX_DIR " || { echo FAIL > " UPD_RESULT_FILE "; exit 0; }\n"
-	"if HOME=" UPD_HOME " ./update > " UPD_LOG_FILE " 2>&1; then\n"
-	"  echo OK > " UPD_RESULT_FILE "\n"
-	"  sleep 5\n"
-	"  " UPD_REBOOT_CMD "\n"
-	"elif [ -x zbitx ]; then\n"
-	"  echo FAIL > " UPD_RESULT_FILE "\n"
-	"else\n"
-	"  echo NOBIN > " UPD_RESULT_FILE "\n"
-	"fi\n";
+	"R=" UPD_RESULT_FILE "\n"
+	"L=" UPD_LOG_FILE "\n"
+	"cd " UPD_SBITX_DIR " || { echo FAIL > $R; exit 0; }\n"
+	"if ! HOME=" UPD_HOME " ./update > $L 2>&1; then\n"
+	"  if [ -x zbitx ]; then echo FAIL > $R; else echo NOBIN > $R; fi\n"
+	"  exit 0\n"
+	"fi\n"
+	"finish() { echo \"OK $1\" > $R; sleep 5; " UPD_REBOOT_CMD "; exit 0; }\n"
+	"echo 'PANEL: getting the front panel firmware' >> $L\n"
+	PANEL_FETCH_SH
+	"[ $pf -eq 0 ] || finish nodownload\n"
+	"[ -n \"$u\" ] || finish nofile\n"
+	"[ -x ./zbitx-panel-flash ] || finish notool\n"
+	"nv=$(./zbitx-panel-flash --info \"$u\" 2>>$L) || finish notota\n"
+	"cv=$(cat " UPD_PANEL_VER " 2>/dev/null)\n"
+	"[ \"$nv\" = \"$cv\" ] && finish \"current $nv\"\n"
+	"echo \"PANEL: updating the front panel to $nv\" >> $L\n"
+	"echo \"PANEL $nv\" > $R\n"
+	"sleep 3\n"
+	"pkill -x zbitx\n"
+	"i=0; while pgrep -x zbitx >/dev/null && [ $i -lt 20 ]; do sleep 1; i=$((i+1)); done\n"
+	"pkill -9 -x zbitx 2>/dev/null\n"
+	"./zbitx-panel-flash --yes --if-different --report \"$u\" >> $L 2>&1\n"
+	"echo \"PANEL: zbitx-panel-flash exit $?\" >> $L\n"
+	"sleep 3\n"
+	UPD_REBOOT_CMD "\n";
 
 static int check_pending = 0;
+static char panel_installed[24] = "";   /* as reported by the panel */
 static long check_started_ms = 0;
 static int running = 0;
 static long run_started_ms = 0;
@@ -110,6 +162,17 @@ static void panel_push(const char *label, const char *value)
 	snprintf(buff, sizeof(buff), "%s %s}", label, clean);
 	i2cbb_write_i2c_block_data(UPDATE_PANEL_I2C_ADDRESS, '{',
 							   (uint8_t)strlen(buff), (const uint8_t *)buff);
+}
+
+/* Keep only characters that belong in a version string ("5.16f-t2"). */
+static void clean_version(const char *in, char *out, int len)
+{
+	int k = 0;
+	for (const char *p = in ? in : ""; *p && k < len - 1; p++)
+		if ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'z') ||
+		    (*p >= 'A' && *p <= 'Z') || *p == '.' || *p == '-' || *p == '_')
+			out[k++] = *p;
+	out[k] = 0;
 }
 
 static int write_script(const char *path, const char *body)
@@ -158,7 +221,9 @@ static void current_step(char *out, int len)
 	log[n] = 0;
 
 	char *p;
-	if ((p = strstr(log, "Build completed")) || strstr(log, "Stripping zbitx"))
+	if (strstr(log, "PANEL: getting"))
+		snprintf(out, len, "zBitx software installed.\nGetting the front panel firmware...");
+	else if ((p = strstr(log, "Build completed")) || strstr(log, "Stripping zbitx"))
 		snprintf(out, len, "Finishing the build...");
 	else if ((p = strstr(log, "compiling zbitx version "))) {
 		/* "compiling zbitx version v5.15a in /home/pi/sbitx" */
@@ -195,9 +260,10 @@ static void installed_version_from_source(char *out, int len)
 	fclose(f);
 }
 
-void update_panel_check(const char *installed_version)
+void update_panel_check(const char *installed_version, const char *panel_version)
 {
 	char b[120];
+	clean_version(panel_version, panel_installed, sizeof(panel_installed));
 	snprintf(b, sizeof(b), "Installed: %s", installed_version);
 	panel_push("UPD_CUR", b);
 
@@ -217,12 +283,25 @@ void update_panel_check(const char *installed_version)
 	check_started_ms = now_ms();
 }
 
-int update_panel_start(void)
+int update_panel_start(const char *panel_version)
 {
 	if (running)
 		return 0;
 
 	mkdir(UPD_WORK_DIR, 0755);
+	/* What the panel runs now, so the script can skip an unneeded panel
+	 * update. Older panel firmware doesn't send it: then the file is
+	 * removed and zbitx-panel-flash asks the panel itself. */
+	char pv[24];
+	clean_version(panel_version, pv, sizeof(pv));
+	unlink(UPD_PANEL_VER);
+	if (pv[0]) {
+		FILE *f = fopen(UPD_PANEL_VER, "w");
+		if (f) {
+			fputs(pv, f);
+			fclose(f);
+		}
+	}
 	/* Clear the last outcome before the script starts, so the poller can't
 	 * pick up a stale result in the moment before the script runs. */
 	unlink(UPD_RESULT_FILE);
@@ -257,12 +336,19 @@ void update_panel_poll(void)
 			char ver[64] = "", out[120];
 			int behind = -1;
 			check_pending = 0;
+			char panel[24] = "";
+			int panel_known = 0;
 			if (!strncmp(line, "OK|", 3)) {
 				char *v = line + 3;
 				char *bar = strchr(v, '|');
 				if (bar) {
 					*bar = 0;
 					behind = atoi(bar + 1);
+					char *bar2 = strchr(bar + 1, '|');
+					if (bar2) {
+						panel_known = 1;
+						snprintf(panel, sizeof(panel), "%s", bar2 + 1);
+					}
 				}
 				snprintf(ver, sizeof(ver), "%s", v);
 				if (behind == 0)
@@ -275,6 +361,18 @@ void update_panel_poll(void)
 			else
 				snprintf(out, sizeof(out), "Available: can't reach GitHub");
 			panel_push("UPD_NEW", out);
+
+			/* Front panel line (panels with the UPD_PNL field show it). */
+			const char *cur = panel_installed[0] ? panel_installed : "?";
+			if (!panel_known || !panel[0])
+				snprintf(out, sizeof(out), "Front panel: %s", cur);
+			else if (!strcmp(panel, "-"))
+				snprintf(out, sizeof(out), "Front panel: %s (no update available)", cur);
+			else if (!strcmp(panel, panel_installed))
+				snprintf(out, sizeof(out), "Front panel: %s (up to date)", cur);
+			else
+				snprintf(out, sizeof(out), "Front panel: %s -> %s", cur, panel);
+			panel_push("UPD_PNL", out);
 		}
 		else if (t - check_started_ms > 90000) {
 			check_pending = 0;
@@ -285,20 +383,45 @@ void update_panel_poll(void)
 	if (!running)
 		return;
 
-	char result[32];
-	if (read_line(UPD_RESULT_FILE, result, sizeof(result))) {
+	char result[64];
+	int have_result = read_line(UPD_RESULT_FILE, result, sizeof(result));
+
+	/* Pi software built; the script is about to stop this app and update
+	 * the front panel. Keep the panel locked and say so until then. */
+	if (have_result && !strncmp(result, "PANEL", 5)) {
+		if (t - last_beat_ms >= 1000) {
+			char b[160];
+			last_beat_ms = t;
+			snprintf(b, sizeof(b),
+				"zBitx software installed.\n"
+				"Updating the front panel to %.20s...\n"
+				"Do not power off the radio.", result[5] ? result + 6 : "");
+			panel_push("UPD_STAT", b);
+			panel_push("UPD_STATE", "RUNNING");
+		}
+		return;
+	}
+
+	if (have_result) {
 		running = 0;
-		if (!strcmp(result, "OK")) {
-			char ver[64], b[120];
+		if (!strncmp(result, "OK", 2)) {
+			char ver[64], b[160];
 			installed_version_from_source(ver, sizeof(ver));
 			if (ver[0]) {
 				snprintf(b, sizeof(b), "New version: %s", ver);
 				panel_push("UPD_NEW", b);
 			}
-			panel_push("UPD_STAT",
-				"Update complete.\n"
-				"Rebooting the radio...\n"
-				"This screen clears when it is back.");
+			/* "OK <why the panel was left alone>" */
+			const char *why = result[2] ? result + 3 : "";
+			const char *pnl = "";
+			if (!strncmp(why, "current", 7))
+				pnl = "The front panel is up to date.\n";
+			else if (!strcmp(why, "nodownload"))
+				pnl = "Couldn't download the front panel\nfirmware; the panel was not changed.\n";
+			else if (!strcmp(why, "nofile") || !strcmp(why, "notota"))
+				pnl = "No front panel update is available.\n";
+			snprintf(b, sizeof(b), "Update complete.\n%sRebooting the radio...", pnl);
+			panel_push("UPD_STAT", b);
 			panel_push("UPD_STATE", "DONE");
 		}
 		else if (!strcmp(result, "NOBIN")) {

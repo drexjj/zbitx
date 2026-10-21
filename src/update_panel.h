@@ -7,9 +7,15 @@
  * Software update from the front panel (MENU -> UPDATE).
  *
  * Command flow (panel -> Pi), routed through cmd_exec() in sbitx_main.c:
- *   "UPDCHECK" -> push the installed version to UPD_CUR, then fetch the
+ *   "UPDCHECK <panel version>"
+ *              -> push the installed version to UPD_CUR, then fetch the
  *                 current branch from GitHub in the background and push the
- *                 available version (and how many commits behind) to UPD_NEW.
+ *                 available version (and how many commits behind) to UPD_NEW,
+ *                 and the front panel's installed/available versions to
+ *                 UPD_PNL. (Older panels send no version.)
+ *   "UPDATE <panel version>"
+ *              -> as below; after the Pi build, the newest published panel
+ *                 firmware is installed over I2C if it differs.
  *   "UPDATE"   -> run ~/sbitx/update detached from this process. While it
  *                 runs, push UPD_STATE RUNNING plus a progress line to
  *                 UPD_STAT once a second; the panel stays locked on its update
@@ -26,10 +32,10 @@
  */
 
 /* Panel asked for versions (the update confirm screen just opened). */
-void update_panel_check(const char *installed_version);
+void update_panel_check(const char *installed_version, const char *panel_version);
 
 /* Panel confirmed: start the update. Returns 0 if started, -1 if not. */
-int update_panel_start(void);
+int update_panel_start(const char *panel_version);
 
 /* Non-zero while an update started by this process is running. */
 int update_panel_running(void);

@@ -1,7 +1,7 @@
 /*
  * zbitx-panel-flash — send new firmware to the zBitx front panel over I2C.
  *
- *   zbitx-panel-flash [--check] [--yes] <zbitxfrontpanel.uf2 | .bin>
+ *   zbitx-panel-flash [options] <zbitxfrontpanel.uf2 | .bin>
  *
  * The Pi and the panel's Pico share only the I2C bus (/dev/i2c-3), so the
  * image goes over that, in checksummed chunks, to firmware that can store it
@@ -17,8 +17,17 @@
  * the "ZBITX-PANEL-FW" marker. The panel checks the MD5 of what it received
  * before it installs anything.
  *
- *   --check   only check the file (and ask the panel, if it can be reached)
- *   --yes     don't ask for confirmation
+ *   --check         only check the file and ask the panel; send nothing
+ *   --info          only check the file and print its panel version
+ *   --yes           don't ask for confirmation
+ *   --if-different  do nothing if the panel already runs this version
+ *   --report        tell the panel's update lock screen what happened when
+ *                   the panel doesn't take over the screen itself (used by
+ *                   the UPDATE button's script)
+ *
+ * Exit status: 0 sent and installed, 3 panel already up to date, 4 panel
+ * can't take updates this way (needs one USB flash), 5 file is not a usable
+ * panel image, 1 anything else.
  */
 
 #include <stdio.h>
@@ -39,6 +48,14 @@
 #define FLASH_MAX      (2u * 1024 * 1024)
 #define UF2_FAMILY_RP2040 0xe48bff56u
 #define MARKER         "ZBITX-PANEL-FW "
+
+#define EX_SENT     0
+#define EX_FAILED   1
+#define EX_CURRENT  3
+#define EX_PANEL    4
+#define EX_IMAGE    5
+
+static int report = 0;
 
 static volatile sig_atomic_t interrupted = 0;
 static void on_sigint(int s) { (void)s; interrupted = 1; }
@@ -251,6 +268,24 @@ static const char *wait_fw(int timeout_ms)
 	return NULL;
 }
 
+/* --report: show text on the panel's update lock screen (UPD_* fields). */
+static void panel_say(const char *label, const char *text)
+{
+	if (!report)
+		return;
+	char b[200];
+	snprintf(b, sizeof(b), "%s %s}", label, text);
+	i2cbb_write_i2c_block_data(PANEL_ADDR, '{', strlen(b), (const uint8_t *)b);
+}
+
+/* --report: final message for an outcome where the panel isn't flashed. The
+ * lock screen then waits for the radio's reboot, as after a normal update. */
+static void panel_finish(const char *text)
+{
+	panel_say("UPD_STAT", text);
+	panel_say("UPD_STATE", "DONE");
+}
+
 static int app_running(void)
 {
 	return system("pgrep -x zbitx >/dev/null 2>&1") == 0;
@@ -259,18 +294,21 @@ static int app_running(void)
 int main(int argc, char **argv)
 {
 	const char *path = NULL;
-	int check_only = 0, yes = 0;
+	int check_only = 0, yes = 0, info = 0, if_different = 0;
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--check")) check_only = 1;
 		else if (!strcmp(argv[i], "--yes")) yes = 1;
+		else if (!strcmp(argv[i], "--info")) info = 1;
+		else if (!strcmp(argv[i], "--if-different")) if_different = 1;
+		else if (!strcmp(argv[i], "--report")) report = 1;
 		else if (argv[i][0] != '-' && !path) path = argv[i];
 		else {
-			fprintf(stderr, "usage: %s [--check] [--yes] <panel firmware .uf2|.bin>\n", argv[0]);
+			fprintf(stderr, "usage: %s [--check|--info] [--yes] [--if-different] [--report] <panel firmware .uf2|.bin>\n", argv[0]);
 			return 2;
 		}
 	}
 	if (!path) {
-		fprintf(stderr, "usage: %s [--check] [--yes] <panel firmware .uf2|.bin>\n", argv[0]);
+		fprintf(stderr, "usage: %s [--check|--info] [--yes] [--if-different] [--report] <panel firmware .uf2|.bin>\n", argv[0]);
 		return 2;
 	}
 
@@ -279,7 +317,7 @@ int main(int argc, char **argv)
 	uint8_t *file = read_file(path, &flen);
 	if (!file) {
 		fprintf(stderr, "Can't read %s\n", path);
-		return 1;
+		return EX_IMAGE;
 	}
 	uint8_t *img = file;
 	len = flen;
@@ -288,23 +326,29 @@ int main(int argc, char **argv)
 		img = uf2_to_bin(file, flen, &len, &why);
 		if (!img) {
 			fprintf(stderr, "%s: %s\n", path, why);
-			return 1;
+			return EX_IMAGE;
 		}
 	}
 	if (len < 65536 || len > FLASH_MAX) {
 		fprintf(stderr, "%s: %zu bytes is not a plausible panel image\n", path, len);
-		return 1;
+		return EX_IMAGE;
 	}
 	if (!boot2_ok(img, len)) {
 		fprintf(stderr, "%s: no valid RP2040 boot block at the start; not a Pico flash image\n", path);
-		return 1;
+		return EX_IMAGE;
 	}
 	char img_id[64];
 	if (!find_marker(img, len, img_id, sizeof(img_id))) {
 		fprintf(stderr, "%s: not zBitx front panel firmware (no \"" MARKER "\" marker).\n"
 			"Only firmware built with fw_update.ino can be sent this way.\n", path);
-		return 1;
+		return EX_IMAGE;
 	}
+	const char *img_ver = img_id + strlen(MARKER);
+	if (info) {
+		printf("%s\n", img_ver);
+		return EX_SENT;
+	}
+
 	size_t glen = 0;
 	uint8_t *gz = gzip_image(img, len, &glen);
 	if (!gz) {
@@ -318,15 +362,16 @@ int main(int argc, char **argv)
 	/* -- find the panel -- */
 	if (app_running()) {
 		fprintf(stderr, "The zBitx app is running. Stop it first:  pkill zbitx\n");
-		return 1;
+		return EX_FAILED;
 	}
+	panel_say("UPD_STAT", "Checking the front panel...\nDo not power off the radio.");
 	signal(SIGINT, on_sigint);
 	signal(SIGTERM, on_sigint);
 
 	const char *q = "FWQUERY 1}";
 	if (i2cbb_write_i2c_block_data(PANEL_ADDR, '{', strlen(q), (const uint8_t *)q) < 0) {
 		fprintf(stderr, "Can't reach the front panel on I2C\n");
-		return 1;
+		return EX_FAILED;
 	}
 	char cap[80] = "";
 	long end = now_ms() + 3000;
@@ -341,7 +386,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "The front panel didn't answer the update query. Its firmware is\n"
 			"older than this feature: flash it once by USB (hold the knob in at\n"
 			"power-up, copy the .uf2 to RPI-RP2). After that it can be updated here.\n");
-		return 1;
+		panel_finish("Front panel not updated: its firmware\nneeds one USB update first.\nRebooting the radio...");
+		return EX_PANEL;
 	}
 	char panel_id[64] = "", panel_ver[32] = "";
 	unsigned long area = 0, heap = 0;
@@ -350,16 +396,23 @@ int main(int argc, char **argv)
 	if (area == 0) {
 		fprintf(stderr, "This panel firmware was built without an update area\n"
 			"(flash size option \"2MB (Sketch: 1536KB, FS: 512KB)\"). Flash it once by USB.\n");
-		return 1;
+		panel_finish("Front panel not updated: its firmware\nneeds one USB update first.\nRebooting the radio...");
+		return EX_PANEL;
 	}
 	if (glen > area) {
 		fprintf(stderr, "The compressed image (%zu KB) doesn't fit the panel's update area (%lu KB)\n",
 			glen / 1024, area / 1024);
-		return 1;
+		panel_finish("Front panel not updated: the new\nfirmware is too big for it.\nRebooting the radio...");
+		return EX_PANEL;
+	}
+	if (if_different && !strcmp(panel_ver, img_ver)) {
+		printf("The panel already runs %s; nothing to do.\n", img_ver);
+		panel_finish("Front panel is up to date.\nRebooting the radio...");
+		return EX_CURRENT;
 	}
 	if (check_only) {
 		printf("Check OK; nothing sent.\n");
-		return 0;
+		return EX_SENT;
 	}
 	if (!yes) {
 		printf("Send it to the panel? [y/N] ");
@@ -385,7 +438,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "The panel didn't start the update: %s\n", r ? r : "no answer");
 		if (r && strstr(r, "begin 98"))
 			fprintf(stderr, "(not enough free RAM on the panel)\n");
-		return 1;
+		panel_finish("The front panel update didn't start.\nRebooting the radio...");
+		return EX_FAILED;
 	}
 
 	/* -- data -- */

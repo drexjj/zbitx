@@ -70,7 +70,7 @@ LIBS := -lwiringPi -lasound -lm -lfftw3 -lfftw3f -pthread -lncurses -lsqlite3 \
 # ---- Targets ----------------------------------------------------------------
 .PHONY: all zbitx panel-flash dirs db clean distclean test-iq hpsdr-bench test-hpsdr tci-bench test-tci test
 
-all: zbitx
+all: zbitx panel-flash
 
 dirs:
 	@mkdir -p ./audio ./data ./web
@@ -99,8 +99,8 @@ zbitx: db
 	@echo "Version $(VERSION) brought to you by volunteers at Radio & Electronics Hub"
 	@echo "Please consider a small donation as a token of thanks.."
 
-# Front-panel firmware sender (see tools/panel_flash.c). Not part of 'all'
-# yet: build it with 'make panel-flash' while it is being tested.
+# Front-panel firmware sender (see tools/panel_flash.c). Part of 'all', so
+# the update script builds it; the UPDATE button uses it to update the panel.
 panel-flash:
 	$(CC) -O2 -Wall -o zbitx-panel-flash tools/panel_flash.c src/i2c.c -lcrypto
 
