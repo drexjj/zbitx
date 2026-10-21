@@ -19,3 +19,4 @@ tests/hpsdr_bench
 tests/hpsdr_bench.log
 tests/tci_bench
 tests/__pycache__/
+zbitx-panel-flash

@@ -68,7 +68,7 @@ LIBS := -lwiringPi -lasound -lm -lfftw3 -lfftw3f -pthread -lncurses -lsqlite3 \
 	-lnsl -lrt -lssl -lcrypto
 
 # ---- Targets ----------------------------------------------------------------
-.PHONY: all zbitx dirs db clean distclean test-iq hpsdr-bench test-hpsdr tci-bench test-tci test
+.PHONY: all zbitx panel-flash dirs db clean distclean test-iq hpsdr-bench test-hpsdr tci-bench test-tci test
 
 all: zbitx
 
@@ -99,8 +99,13 @@ zbitx: db
 	@echo "Version $(VERSION) brought to you by volunteers at Radio & Electronics Hub"
 	@echo "Please consider a small donation as a token of thanks.."
 
+# Front-panel firmware sender (see tools/panel_flash.c). Not part of 'all'
+# yet: build it with 'make panel-flash' while it is being tested.
+panel-flash:
+	$(CC) -O2 -Wall -o zbitx-panel-flash tools/panel_flash.c src/i2c.c -lcrypto
+
 clean:
-	rm -f zbitx tests/test_iq tests/hpsdr_bench tests/tci_bench
+	rm -f zbitx zbitx-panel-flash tests/test_iq tests/hpsdr_bench tests/tci_bench
 
 # ---- Bench tests (no radio needed) -------------------------------------------
 # test-iq:     I/Q front end (iq_baseband.c) against synthetic IF tones
