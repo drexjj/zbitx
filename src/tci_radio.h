@@ -2,8 +2,7 @@
 //
 // tci.c (from maxibitx) talks to the radio only through these functions.
 // tci_radio.c implements them over zbitx's fields and commands, the same
-// ones the front panel, web UI and Hamlib use; tests/tci_radio_stub.c
-// implements them over plain variables for the bench.
+// ones the front panel, web UI and Hamlib use.
 //
 // All are called from TCI's own threads (never the audio thread), with
 // tci.c's lock held.

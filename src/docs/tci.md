@@ -101,16 +101,3 @@ the console.
     time so the client stays paced.
 - `tci_stream.c` and `tci_ws.c` are maxibitx's, unchanged except for the I/Q
   sign and the audio scale.
-
-## Testing without a radio
-
-    make test-tci          # 54 scripted checks against a stub radio (tests/tci_test.py),
-                           # including SDR oxide's keyboard-CW sequence
-    make tci-bench && ./tests/tci_bench    # a stub server, for trying a real app
-    python3 tests/tci_client.py --host <zbitx-ip>              # the startup burst, checked
-    python3 tests/tci_client.py --host <zbitx-ip> --audio 3 --iq 3
-    python3 tests/tci_client.py --host <zbitx-ip> -c "vfo:0,0,7074000;"
-    python3 tests/tci_client.py --host <zbitx-ip> --tx-tone 1000   # TRANSMITS: use a dummy load
-
-The bench's stub radio switches TX 300 ms after each request, as zBitx can.
-The test also runs it with a 2.5 s delay.

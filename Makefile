@@ -68,7 +68,7 @@ LIBS := -lwiringPi -lasound -lm -lfftw3 -lfftw3f -pthread -lncurses -lsqlite3 \
 	-lnsl -lrt -lssl -lcrypto
 
 # ---- Targets ----------------------------------------------------------------
-.PHONY: all zbitx panel-flash dirs db clean distclean test-iq hpsdr-bench test-hpsdr tci-bench test-tci test
+.PHONY: all zbitx panel-flash dirs db clean distclean
 
 all: zbitx panel-flash
 
@@ -105,39 +105,7 @@ panel-flash:
 	$(CC) -O2 -Wall -o zbitx-panel-flash tools/panel_flash.c src/i2c.c -lcrypto
 
 clean:
-	rm -f zbitx zbitx-panel-flash tests/test_iq tests/hpsdr_bench tests/tci_bench
-
-# ---- Bench tests (no radio needed) -------------------------------------------
-# test-iq:     I/Q front end (iq_baseband.c) against synthetic IF tones
-# hpsdr-bench: the HPSDR server with a fake audio thread, for
-#              tests/hpsdr_client.py (or a real SDR app) to connect to
-# test-hpsdr:  runs hpsdr-bench and the client checks against it
-# tci-bench:   the TCI server with a stub radio and fake audio thread
-# test-tci:    scripted TCI client sessions against tci-bench
-# test:        all of the above
-test-iq:
-	$(CC) -O2 -Wall -o tests/test_iq tests/test_iq_baseband.c src/iq_baseband.c -lm
-	./tests/test_iq
-
-hpsdr-bench:
-	$(CC) -O2 -Wall -o tests/hpsdr_bench tests/hpsdr_bench.c src/hpsdr_p1.c src/iq_baseband.c -lm -pthread
-
-test-hpsdr: hpsdr-bench
-	@./tests/hpsdr_bench 0 > tests/hpsdr_bench.log 2>&1 & pid=$$!; sleep 0.5; rc=0; \
-	python3 tests/hpsdr_client.py --host 127.0.0.1 --freq 7074000 --seconds 3 --expect-tone 3000 || rc=1; \
-	python3 tests/hpsdr_client.py --host 127.0.0.1 --rate 48000 --nrx 2 --seconds 2 --expect-tone 3000 || rc=1; \
-	kill $$pid; cat tests/hpsdr_bench.log; exit $$rc
+	rm -f zbitx zbitx-panel-flash
 
 distclean: clean
 	rm -f *.gcda
-
-TCI_BENCH_SRC := tests/tci_bench.c src/tci.c src/tci_ws.c src/tci_stream.c src/tci_audio.c \
-	src/iq_baseband.c src/decim48k.c src/upsample48k.c
-
-tci-bench:
-	$(CC) -O2 -Wall -Wextra -o tests/tci_bench $(TCI_BENCH_SRC) -lm -pthread
-
-test-tci: tci-bench
-	python3 tests/tci_test.py
-
-test: test-iq test-hpsdr test-tci

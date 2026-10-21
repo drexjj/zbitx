@@ -51,21 +51,12 @@ ADC samples:
 | `hpsdr_board_id`   | 1       | board type reported in discovery (1 = Hermes) |
 | `iq_swap`          | 0       | 1 swaps I and Q, if a unit's spectrum turns out mirrored |
 
-## Testing without an SDR app
+## Checking the I/Q orientation
 
-    make test-iq                 # I/Q front end, synthetic tones
-    make test-hpsdr              # server + fake audio thread + client, on this machine
-    python3 tests/hpsdr_client.py --host <zbitx-ip> --freq 7074000 --seconds 5 --wav iq.wav
-
-The client checks discovery, packet rate, sample rate and sequence gaps, and
-reports where the strongest signal sits relative to center (numpy needed for
-that). `--wav` saves the I/Q as a stereo WAV, with I on the left channel and
-Q on the right.
-
-On the radio, the quickest orientation check is to tune the zBitx in USB to
-a carrier, such as a broadcast station, and run the client. A carrier
-1 kHz above the dial should show up at about +1000 Hz. If it shows at
--1000 Hz, set `iq_swap=1`.
+Tune the zBitx in USB to a carrier, such as a broadcast station, and look at
+it in the SDR app. A carrier 1 kHz above the dial should show up about
+1 kHz above the center of the spectrum. If it shows 1 kHz below, set
+`iq_swap=1`.
 
 ## Limits
 
