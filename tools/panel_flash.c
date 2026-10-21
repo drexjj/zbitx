@@ -368,21 +368,50 @@ int main(int argc, char **argv)
 	signal(SIGINT, on_sigint);
 	signal(SIGTERM, on_sigint);
 
+	/* Ask the panel whether it can take an update. The answer comes back on
+	 * a later read; resend the question every second in case it was missed,
+	 * and keep a record of what the panel said instead, for the log. */
 	const char *q = "FWQUERY 1}";
-	if (i2cbb_write_i2c_block_data(PANEL_ADDR, '{', strlen(q), (const uint8_t *)q) < 0) {
-		fprintf(stderr, "Can't reach the front panel on I2C\n");
-		return EX_FAILED;
-	}
 	char cap[80] = "";
-	long end = now_ms() + 3000;
-	while (now_ms() < end && !cap[0]) {
+	char seen[4][64];
+	int nseen = 0, reads = 0, read_errors = 0, sends = 0, send_errors = 0;
+	long end = now_ms() + 10000, next_send = 0;
+	while (now_ms() < end && !cap[0] && !interrupted) {
+		if (now_ms() >= next_send) {
+			sends++;
+			if (i2cbb_write_i2c_block_data(PANEL_ADDR, '{', strlen(q), (const uint8_t *)q) < 0)
+				send_errors++;
+			next_send = now_ms() + 1000;
+		}
 		const char *r = read_reply();
-		if (r && !strncmp(r, "FWCAP ", 6))
+		reads++;
+		if (!r)
+			read_errors++;
+		else if (!strncmp(r, "FWCAP ", 6))
 			snprintf(cap, sizeof(cap), "%.79s", r);
-		else
+		else {
+			int dup = 0;
+			for (int i = 0; i < nseen; i++)
+				if (!strncmp(seen[i], r, 63))
+					dup = 1;
+			if (!dup && nseen < 4)
+				snprintf(seen[nseen++], 64, "%.63s", r);
+		}
+		if (!cap[0])
 			sleep_ms(20);
 	}
+	if (!cap[0] && send_errors == sends) {
+		fprintf(stderr, "Can't reach the front panel on I2C\n");
+		panel_finish("The front panel update didn't start.\nRebooting the radio...");
+		return EX_FAILED;
+	}
 	if (!cap[0]) {
+		fprintf(stderr, "No answer to the update query: %d queries (%d failed), "
+			"%d reads (%d failed).\n", sends, send_errors, reads, read_errors);
+		for (int i = 0; i < nseen; i++)
+			fprintf(stderr, "  the panel said: \"%s\"\n", seen[i]);
+		if (app_running())
+			fprintf(stderr, "  NOTE: a zbitx process is running again; it reads the panel's answers.\n");
 		fprintf(stderr, "The front panel didn't answer the update query. Its firmware is\n"
 			"older than this feature: flash it once by USB (hold the knob in at\n"
 			"power-up, copy the .uf2 to RPI-RP2). After that it can be updated here.\n");
