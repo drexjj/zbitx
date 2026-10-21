@@ -368,21 +368,26 @@ int main(int argc, char **argv)
 	signal(SIGINT, on_sigint);
 	signal(SIGTERM, on_sigint);
 
-	/* Ask the panel whether it can take an update. The answer comes back on
-	 * a later read; resend the question every second in case it was missed,
-	 * and keep a record of what the panel said instead, for the log. */
+	/* Ask the panel whether it can take an update. The panel answers from its
+	 * main loop, and a read of its normal data (longer than the Pico's 16-byte
+	 * I2C buffer) keeps its I2C interrupt busy for ~25 ms after the read, so
+	 * polling quickly would starve the main loop and the answer would never
+	 * be prepared. So: send the question, leave the bus alone for a moment,
+	 * read once; repeat, resending the question now and then. Anything the
+	 * panel says instead is kept for the log. */
 	const char *q = "FWQUERY 1}";
 	char cap[80] = "";
 	char seen[4][64];
 	int nseen = 0, reads = 0, read_errors = 0, sends = 0, send_errors = 0;
-	long end = now_ms() + 10000, next_send = 0;
+	long end = now_ms() + 15000, next_send = 0;
 	while (now_ms() < end && !cap[0] && !interrupted) {
 		if (now_ms() >= next_send) {
 			sends++;
 			if (i2cbb_write_i2c_block_data(PANEL_ADDR, '{', strlen(q), (const uint8_t *)q) < 0)
 				send_errors++;
-			next_send = now_ms() + 1000;
+			next_send = now_ms() + 1500;
 		}
+		sleep_ms(300);            /* quiet bus: the panel handles the question */
 		const char *r = read_reply();
 		reads++;
 		if (!r)
@@ -397,8 +402,6 @@ int main(int argc, char **argv)
 			if (!dup && nseen < 4)
 				snprintf(seen[nseen++], 64, "%.63s", r);
 		}
-		if (!cap[0])
-			sleep_ms(20);
 	}
 	if (!cap[0] && send_errors == sends) {
 		fprintf(stderr, "Can't reach the front panel on I2C\n");
