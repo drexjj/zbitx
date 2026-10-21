@@ -14,8 +14,11 @@
  *                 and the front panel's installed/available versions to
  *                 UPD_PNL. (Older panels send no version.)
  *   "UPDATE <panel version>"
- *              -> as below; after the Pi build, the newest published panel
- *                 firmware is installed over I2C if it differs.
+ *              -> as below; the Pi build is skipped if GitHub has the same
+ *                 VER_STR, and the newest published panel firmware is
+ *                 installed over I2C if it differs. If neither changes
+ *                 anything, the radio isn't rebooted: the panel is told
+ *                 and unlocked.
  *   "UPDATE"   -> run ~/sbitx/update detached from this process. While it
  *                 runs, push UPD_STATE RUNNING plus a progress line to
  *                 UPD_STAT once a second; the panel stays locked on its update
@@ -35,7 +38,7 @@
 void update_panel_check(const char *installed_version, const char *panel_version);
 
 /* Panel confirmed: start the update. Returns 0 if started, -1 if not. */
-int update_panel_start(const char *panel_version);
+int update_panel_start(const char *installed_version, const char *panel_version);
 
 /* Non-zero while an update started by this process is running. */
 int update_panel_running(void);

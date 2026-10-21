@@ -5527,7 +5527,7 @@ void cmd_exec(char *cmd)
 			save_user_settings(1);
 			write_console(FONT_LOG, "Updating zBitx software. The radio reboots when done.\n");
 		}
-		update_panel_start(args);
+		update_panel_start(VER_STR, args);
 	}
 	// NOTE: the front panel no longer opens the GTK settings dialog. Its SETUP
 	// screen sets MYCALLSIGN/MYGRID/PASSKEY directly (each field posts its own

@@ -88,27 +88,45 @@ static const char *check_script =
 	"mv -f $t " UPD_CHECK_FILE "\n";
 
 /* The whole update, run detached:
- *  1. the stock update script (git pull + build). On failure: FAIL, or NOBIN
- *     if the build failed after `make clean` removed the binary (the radio
- *     would not start again if it were restarted now).
+ *  1. the stock update script (git pull + build), unless the branch on
+ *     GitHub has the same VER_STR as the installed source and a build is in
+ *     place: then nothing is rebuilt. On failure: FAIL, or NOBIN if the
+ *     build failed after `make clean` removed the binary (the radio would
+ *     not start again if it were restarted now).
  *  2. the front panel: fetch the newest published panel firmware; if it can
  *     be installed over I2C and differs from what the panel runs, stop the
  *     zBitx app (it owns the panel's I2C traffic) and send it with
  *     zbitx-panel-flash, which also tells the panel's lock screen when the
  *     panel isn't flashed. Otherwise "OK <reason>" tells the app, still
  *     running, why the panel was left alone.
- *  3. reboot.
+ *  3. reboot, unless nothing was rebuilt or flashed: then "NOCHANGE <reason>"
+ *     tells the app to unlock the panel and carry on.
  * The result file drives what the app shows (see update_panel_poll()). */
 static const char *run_script =
 	"#!/bin/sh\n"
 	"R=" UPD_RESULT_FILE "\n"
 	"L=" UPD_LOG_FILE "\n"
 	"cd " UPD_SBITX_DIR " || { echo FAIL > $R; exit 0; }\n"
-	"if ! HOME=" UPD_HOME " ./update > $L 2>&1; then\n"
+	/* Same version on GitHub as installed? Then skip the rebuild. */
+	"b=$(git rev-parse --abbrev-ref HEAD); [ \"$b\" = HEAD ] && b=main\n"
+	"cur=$(grep 'define VER_STR' src/sdr_ui.h | head -n 1 | cut -d'\"' -f2)\n"
+	"new=''\n"
+	"if timeout 60 git fetch -q origin \"$b\" > $L 2>&1; then\n"
+	"  new=$(git show FETCH_HEAD:src/sdr_ui.h | grep 'define VER_STR' | head -n 1 | cut -d'\"' -f2)\n"
+	"fi\n"
+	"built=1\n"
+	"if [ -n \"$cur\" ] && [ \"$new\" = \"$cur\" ] && [ -x zbitx ] && [ -x zbitx-panel-flash ]; then\n"
+	"  echo \"SKIPBUILD: $cur is already installed; not rebuilding\" >> $L\n"
+	"  built=0\n"
+	"elif ! HOME=" UPD_HOME " ./update >> $L 2>&1; then\n"
 	"  if [ -x zbitx ]; then echo FAIL > $R; else echo NOBIN > $R; fi\n"
 	"  exit 0\n"
 	"fi\n"
-	"finish() { echo \"OK $1\" > $R; sleep 5; " UPD_REBOOT_CMD "; exit 0; }\n"
+	/* Panel left alone: reboot only if something was rebuilt. */
+	"finish() {\n"
+	"  if [ $built -eq 0 ]; then echo \"NOCHANGE $1\" > $R; exit 0; fi\n"
+	"  echo \"OK $1\" > $R; sleep 5; " UPD_REBOOT_CMD "; exit 0\n"
+	"}\n"
 	"echo 'PANEL: getting the front panel firmware' >> $L\n"
 	PANEL_FETCH_SH
 	"[ $pf -eq 0 ] || finish nodownload\n"
@@ -118,7 +136,7 @@ static const char *run_script =
 	"cv=$(cat " UPD_PANEL_VER " 2>/dev/null)\n"
 	"[ \"$nv\" = \"$cv\" ] && finish \"current $nv\"\n"
 	"echo \"PANEL: updating the front panel to $nv\" >> $L\n"
-	"echo \"PANEL $nv\" > $R\n"
+	"echo \"PANEL $built $nv\" > $R\n"
 	"sleep 3\n"
 	"pkill -x zbitx\n"
 	"i=0; while pgrep -x zbitx >/dev/null && [ $i -lt 20 ]; do sleep 1; i=$((i+1)); done\n"
@@ -130,6 +148,8 @@ static const char *run_script =
 
 static int check_pending = 0;
 static char panel_installed[24] = "";   /* as reported by the panel */
+static char app_version[40] = "";       /* this app's VER_STR */
+static long unlock_at_ms = 0;           /* NOCHANGE: when to unlock the panel */
 static long check_started_ms = 0;
 static int running = 0;
 static long run_started_ms = 0;
@@ -221,8 +241,12 @@ static void current_step(char *out, int len)
 	log[n] = 0;
 
 	char *p;
+	int skipped = strstr(log, "SKIPBUILD:") != NULL;
 	if (strstr(log, "PANEL: getting"))
-		snprintf(out, len, "zBitx software installed.\nGetting the front panel firmware...");
+		snprintf(out, len, "%s\nGetting the front panel firmware...",
+			skipped ? "zBitx software is up to date." : "zBitx software installed.");
+	else if (skipped)
+		snprintf(out, len, "zBitx software is up to date.\nChecking the front panel...");
 	else if ((p = strstr(log, "Build completed")) || strstr(log, "Stripping zbitx"))
 		snprintf(out, len, "Finishing the build...");
 	else if ((p = strstr(log, "compiling zbitx version "))) {
@@ -263,6 +287,7 @@ static void installed_version_from_source(char *out, int len)
 void update_panel_check(const char *installed_version, const char *panel_version)
 {
 	char b[120];
+	snprintf(app_version, sizeof(app_version), "%s", installed_version);
 	clean_version(panel_version, panel_installed, sizeof(panel_installed));
 	snprintf(b, sizeof(b), "Installed: %s", installed_version);
 	panel_push("UPD_CUR", b);
@@ -283,8 +308,9 @@ void update_panel_check(const char *installed_version, const char *panel_version
 	check_started_ms = now_ms();
 }
 
-int update_panel_start(const char *panel_version)
+int update_panel_start(const char *installed_version, const char *panel_version)
 {
+	snprintf(app_version, sizeof(app_version), "%s", installed_version);
 	if (running)
 		return 0;
 
@@ -351,7 +377,9 @@ void update_panel_poll(void)
 					}
 				}
 				snprintf(ver, sizeof(ver), "%s", v);
-				if (behind == 0)
+				if (app_version[0] && !strcmp(ver, app_version))
+					snprintf(out, sizeof(out), "Available: %s (already installed)", ver);
+				else if (behind == 0)
 					snprintf(out, sizeof(out), "Available: %s (up to date)", ver);
 				else if (behind == 1)
 					snprintf(out, sizeof(out), "Available: %s (1 new change)", ver);
@@ -380,6 +408,13 @@ void update_panel_poll(void)
 		}
 	}
 
+	if (unlock_at_ms && t >= unlock_at_ms) {
+		char b[80];
+		unlock_at_ms = 0;
+		snprintf(b, sizeof(b), "Software version: %s", app_version);
+		panel_push("PIVERSION", b);
+	}
+
 	if (!running)
 		return;
 
@@ -392,10 +427,14 @@ void update_panel_poll(void)
 		if (t - last_beat_ms >= 1000) {
 			char b[160];
 			last_beat_ms = t;
+			int was_built = 1;
+			char pver[24] = "";
+			sscanf(result + 5, "%d %23s", &was_built, pver);
 			snprintf(b, sizeof(b),
-				"zBitx software installed.\n"
-				"Updating the front panel to %.20s...\n"
-				"Do not power off the radio.", result[5] ? result + 6 : "");
+				"%s\n"
+				"Updating the front panel to %s...\n"
+				"Do not power off the radio.",
+				was_built ? "zBitx software installed." : "zBitx software is up to date.", pver);
 			panel_push("UPD_STAT", b);
 			panel_push("UPD_STATE", "RUNNING");
 		}
@@ -404,6 +443,24 @@ void update_panel_poll(void)
 
 	if (have_result) {
 		running = 0;
+		if (!strncmp(result, "NOCHANGE", 8)) {
+			/* Nothing rebuilt or flashed: no reboot. Say so, then unlock
+			 * the panel: its lock screen leaves on a PIVERSION push, the
+			 * same signal the software sends when it starts. */
+			const char *why = result[8] ? result + 9 : "";
+			const char *pnl = "No front panel update is available.\n";
+			if (!strncmp(why, "current", 7))
+				pnl = "The front panel is up to date.\n";
+			else if (!strcmp(why, "nodownload"))
+				pnl = "Couldn't download the front panel\nfirmware.\n";
+			char b[160];
+			snprintf(b, sizeof(b), "%.24s is already installed.\n%sNothing to update.",
+				app_version, pnl);
+			panel_push("UPD_STAT", b);
+			panel_push("UPD_STATE", "DONE");
+			unlock_at_ms = t + 4000;
+			return;
+		}
 		if (!strncmp(result, "OK", 2)) {
 			char ver[64], b[160];
 			installed_version_from_source(ver, sizeof(ver));
