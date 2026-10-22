@@ -1,3 +1,5 @@
+#include "hpsdr_p1.h"
+#include "tci.h"
 #include "cw_runtime.h"
 /*
 The initial sync between the gui values, the core radio values, settings, et al are manually set.
@@ -42,6 +44,7 @@ The initial sync between the gui values, the core radio values, settings, et al 
 #include "hamlib.h"
 #include "remote.h"
 #include "wifi_panel.h"
+#include "update_panel.h"
 #include "modem_ft8.h"
 #include "i2cbb.h"
 #include "webserver.h"
@@ -2409,6 +2412,26 @@ void set_operating_freq(int dial_freq, char *response)
 	sdr_request(freq_request, response);
 }
 
+// Appends to the text the CW/digital sender keys from (TCI's cw_macros,
+// via tci_radio.c). UI thread only. Returns the characters appended.
+int tx_text_append(const char *s)
+{
+	struct field *f = get_field("#text_in");
+	if (!f || f->value[0] == COMMAND_ESCAPE)
+		return 0;
+	size_t len = strlen(f->value), n = 0;
+	while (s[n] && len + n < MAX_FIELD_LENGTH - 1 && len + n < (size_t)f->max)
+	{
+		f->value[len + n] = s[n];
+		n++;
+	}
+	f->value[len + n] = 0;
+	f->is_dirty = 1;
+	f->update_remote = 1;
+	f->updated_at = millis();
+	return (int)n;
+}
+
 void abort_tx()
 {
 	set_field("#text_in", "");
@@ -3213,6 +3236,9 @@ int do_bfo_offset(struct field *f, int event, int a, int b, int c)
 	return 0;
 }
 
+// Set only by tx_on_audio(): key through the normal T/R path even in CW.
+static int tx_on_force_audio;
+
 void tx_on(int trigger)
 {
 	char response[100];
@@ -3224,7 +3250,7 @@ void tx_on(int trigger)
 	}
 
 	struct field *f = get_field("r1:mode");
-    if (f && (!strcmp(f->value, "CW") || !strcmp(f->value, "CWR"))) {
+    if (f && !tx_on_force_audio && (!strcmp(f->value, "CW") || !strcmp(f->value, "CWR"))) {
         struct cw_config c;
         cw_ui_config(&c);
         cw_runtime_configure(&c);
@@ -3268,6 +3294,17 @@ void tx_on(int trigger)
 
 	tx_start_time = millis();
 	sound_reset(1);
+}
+
+// Keys for a TCI client that sends its own transmit audio (tci_radio.c).
+// Identical to tx_on(TX_SOFT) except in CW/CWR, where it bypasses the CW
+// keyer's runtime: the client's audio is the keyed signal (sbitx.c's
+// tx_process()), and TX holds until tx_off(), not the keyer's hang time.
+void tx_on_audio(void)
+{
+	tx_on_force_audio = 1;
+	tx_on(TX_SOFT);
+	tx_on_force_audio = 0;
 }
 
 int check_plugin_controls(void)
@@ -4283,6 +4320,9 @@ void zbitx_poll(int all){
 	 * produced. Main-thread-only I2C write, same as everything else here. */
 	wifi_panel_poll();
 
+	/* Push software-update versions/progress to the panel (MENU -> UPDATE). */
+	update_panel_poll();
+
 	/*  this block printed zbitx_poll() timing data during debug
 	clock_gettime(CLOCK_MONOTONIC, &_zp_t1);
 	long _zp_us = (_zp_t1.tv_sec - _zp_t0.tv_sec) * 1000000L
@@ -4382,6 +4422,12 @@ void ui_tick(void)
 	int static ticks = 0;
 
 	ticks++;
+
+	// changes TCI clients asked for (tci_radio.c), run here on the UI thread
+	{
+		extern void tci_radio_ui_tick(void);
+		tci_radio_ui_tick();
+	}
 
 	while (q_length(&q_remote_commands) > 0)
 	{
@@ -5465,6 +5511,24 @@ void cmd_exec(char *cmd)
 		save_user_settings(1);
 		system("sudo /sbin/shutdown -h now");
 	}
+	// UPDCHECK / UPDATE: the front panel's MENU -> UPDATE screen. UPDCHECK
+	// asks for the installed and available versions; UPDATE is sent once the
+	// user confirms. update_panel.c runs git and the build in the background
+	// and keeps the panel locked on its update screen until the radio has
+	// rebooted into the new software.
+	else if (!strcmp(exec, "UPDCHECK"))
+	{
+		update_panel_check(VER_STR, args);   // args: the panel's version
+	}
+	else if (!strcmp(exec, "UPDATE"))
+	{
+		if (!update_panel_running()) {
+			tx_off();
+			save_user_settings(1);
+			write_console(FONT_LOG, "Updating zBitx software. The radio reboots when done.\n");
+		}
+		update_panel_start(VER_STR, args);
+	}
 	// NOTE: the front panel no longer opens the GTK settings dialog. Its SETUP
 	// screen sets MYCALLSIGN/MYGRID/PASSKEY directly (each field posts its own
 	// command), so there is no "SETUP"/"SETUPCLOSE" handshake here anymore.
@@ -5968,6 +6032,18 @@ int main(int argc, char *argv[])
 
 	// hamlib_start();
 	initialize_hamlib();
+	if (hpsdr_init() < 0)
+		printf("hpsdr: UDP %d unavailable, continuing without HPSDR\n", HPSDR_PORT);
+	{
+		extern int tci_port;
+		extern char tci_bind[];
+		if (tci_port == 0)
+			printf("tci: off (tci_port=0)\n");
+		else if (tci_init(tci_bind, tci_port, TCI_DEFAULT_MAX_CLIENTS) < 0)
+			printf("tci: TCP %d unavailable, continuing without TCI\n", tci_port);
+		else
+			printf("tci: server listening on TCP %d\n", tci_port);
+	}
 	remote_start();
 	wifi_panel_init();
 	rtc_read();

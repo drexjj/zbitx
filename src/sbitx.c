@@ -1,3 +1,6 @@
+#include "iq_baseband.h"
+#include "hpsdr_p1.h"
+#include "tci_audio.h"
 #include "cw_runtime.h"
 #include "radio_control.h"
 #include "modem_cw.h"
@@ -103,6 +106,15 @@ static int tx_use_line = 0;
 struct rx *rx_list = NULL;
 struct rx *tx_list = NULL;
 struct filter *tx_filter; // convolution filter
+
+// Set by sound_process() for each block while a TCI client is transmitting
+// its own audio (tci_audio_tx() filled input_mic). In CW/CWR, tx_process()
+// then sends that audio - the client's keyed, shaped sidetone, as SDR oxide
+// sends it - instead of zbitx's keyer.
+static int tx_from_tci_audio = 0;
+// Full-scale TCI audio maps to the keyer's key-down level
+// (cw_tx_get_sample()'s 1/8, then /3 below).
+#define TCI_CW_AUDIO_SCALE (1.0 / 24.0)
 static double tx_amp = 0.0;
 static double alc_level = 1.0;
 static int tr_relay = 0;
@@ -224,6 +236,14 @@ void radio_tune_to(u_int32_t f)
 	else
 		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - shift_hz + TUNING_SHIFT);
 
+	// The pitch folded into clk2 above moves the dial off the IF center;
+	// tell the I/Q front end so its DC stays on the dial frequency.
+	if (rx_list->mode == MODE_CW)
+		iq_baseband_set_offset(pitch);
+	else if (rx_list->mode == MODE_CWR)
+		iq_baseband_set_offset(-pitch);
+	else
+		iq_baseband_set_offset(0);
 	//  printf("Setting radio pitch %d\n", pitch);
 }
 long set_bfo_offset(int offset, long cur_freq)
@@ -1822,6 +1842,8 @@ void tx_process(
 			i_sample = (1.0 * (vfo_read(&tone_a) + vfo_read(&tone_b))) / 50000000000.0;
 		else if (r->mode == MODE_CALIBRATE)
 			i_sample = (1.0 * (vfo_read(&tone_a))) / 30000000000.0;
+		else if ((r->mode == MODE_CW || r->mode == MODE_CWR) && tx_from_tci_audio)
+			i_sample = (1.0 * input_mic[j]) / 2147483647.0 * TCI_CW_AUDIO_SCALE;
 		else if (r->mode == MODE_CW || r->mode == MODE_CWR || r->mode == MODE_FT8)
 			i_sample = modem_next_sample(r->mode) / 3;
 		else if (r->mode == MODE_AM)
@@ -2137,6 +2159,12 @@ void sound_process(
 	int32_t *output_speaker, int32_t *output_tx,
 	int n_samples)
 {
+    // External I/Q (HPSDR, TCI). Independent of the demodulator below, so
+    // it runs even when the DSP lock is busy; silence while transmitting.
+    iq_baseband_process(input_rx, n_samples, in_tx);
+    // A TCI client transmitting its own audio replaces the mic input.
+    tx_from_tci_audio = tci_audio_tx(input_mic, n_samples, in_tx);
+
     if (!radio_dsp_trylock()) {
         memset(output_speaker, 0, n_samples * sizeof(*output_speaker));
         memset(output_tx, 0, n_samples * sizeof(*output_tx));
@@ -2157,6 +2185,7 @@ void sound_process(
 	{
 		wav_record(in_tx == 0 ? output_speaker : input_mic, n_samples);
 	}
+	tci_audio_rx(output_speaker, n_samples, in_tx);
     radio_dsp_unlock();
 }
 
@@ -2242,6 +2271,16 @@ void resetup_oscillators()
 	si5351_reset();
 }
 static int hw_init_index = 0;
+// hw_settings.ini keys for the HPSDR server (see hpsdr_p1.h)
+static int hpsdr_enable = 1;
+static int hpsdr_allow_mox = 0;
+static double hpsdr_iq_gain_db = 0.0;
+static int hpsdr_board_id = 1;
+static int iq_swap = 0;
+// TCI server (tci.c); read by sbitx_main.c's startup
+int tci_port = 50001;
+char tci_bind[32] = "";
+
 static int hw_settings_handler(void *user, const char *section,
 							   const char *name, const char *value)
 {
@@ -2266,6 +2305,21 @@ static int hw_settings_handler(void *user, const char *section,
 		ssb_val = atof(value);
 	if (!strcmp(name, "hw"))
 		sbitx_version = atoi(value);
+	// HPSDR Protocol 1 server and its I/Q front end (hpsdr_p1.c, iq_baseband.c)
+	if (!strcmp(name, "hpsdr_enable"))
+		hpsdr_enable = atoi(value);
+	if (!strcmp(name, "hpsdr_allow_mox"))
+		hpsdr_allow_mox = atoi(value);
+	if (!strcmp(name, "hpsdr_iq_gain_db"))
+		hpsdr_iq_gain_db = atof(value);
+	if (!strcmp(name, "hpsdr_board_id"))
+		hpsdr_board_id = atoi(value);
+	if (!strcmp(name, "iq_swap"))
+		iq_swap = atoi(value);
+	if (!strcmp(name, "tci_port"))
+		tci_port = atoi(value);
+	if (!strcmp(name, "tci_bind"))
+		snprintf(tci_bind, sizeof(tci_bind), "%s", value);
 	// Add TCXO Calibration W9JES/KK4DAS
 	if (!strcmp(section, "tcxo"))
 	{
@@ -2737,6 +2791,11 @@ void setup()
 	rx_list->tuned_bin = tx_shift;
 	tx_list->tuned_bin = tx_shift;
 	tx_init(7000000, MODE_LSB, -3000, -150);
+
+	// Time-domain I/Q for HPSDR, from the same IF rx_linear() rotates down.
+	iq_baseband_init(tx_shift * (96000.0 / MAX_BINS));
+	iq_baseband_set_swap(iq_swap);
+	hpsdr_configure(hpsdr_enable, hpsdr_allow_mox, hpsdr_iq_gain_db, hpsdr_board_id);
 
 	/* hw version is read from hw_settings.ini (hw= key).
 	 * If not set there, default to SBITX_V4 (zBitx with RP2040 front panel). */

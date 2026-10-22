@@ -2,9 +2,10 @@
 # Equivalent to the shell build script.
 #
 # Usage:
-#   make                 # build zbitx (debug, default)
-#   make zbitx           # build zbitx (debug)
-#   make OPT=o zbitx     # optimized build (-march=native -O3 -flto)
+#   make                 # build zbitx (optimized, default)
+#   make zbitx           # build zbitx (optimized, default)
+#   make OPT=o zbitx     # optimized build (-march=native -O3 -flto), same as default
+#   make OPT=d zbitx     # debug build (-g, no optimization)
 #   make OPT=g zbitx     # profile-generate build
 #   make OPT=u zbitx     # profile-use build
 #   make clean           # remove binaries
@@ -22,7 +23,10 @@ COMMON_SRC := \
 	src/i2c.c src/si5351v2.c src/ini.c src/hamlib.c src/queue.c src/modems.c src/logbook.c \
 	src/modem_cw.c src/cw_runtime.c src/radio_control.c src/hist_disp.c src/ntputil.c \
 	src/telnet.c src/macros.c src/modem_ft8.c src/remote.c src/mongoose.c src/para_eq.c \
-	src/webserver.c src/wifi_panel.c
+	src/webserver.c src/wifi_panel.c src/update_panel.c \
+	src/iq_baseband.c src/hpsdr_p1.c \
+	src/tci.c src/tci_ws.c src/tci_stream.c src/tci_radio.c src/tci_audio.c \
+	src/decim48k.c src/upsample48k.c
 
 # FT8/FT4 codec: kgoba/ft8_lib (vendored in src/ft8_lib, upstream commit
 # 9fec6ca, which adds non-standard/compound callsign support). It is compiled
@@ -34,11 +38,17 @@ FT8_SRC := \
 	src/ft8_lib/ft8/text.c src/ft8_lib/fft/kiss_fft.c src/ft8_lib/fft/kiss_fftr.c
 
 # ---- Flags ------------------------------------------------------------------
-# Default (debug) flags. Override the optimization mode with OPT=o|g|u.
+# Optimization mode: o (optimized, default), d (debug), g (profile-generate),
+# u (profile-use). Override on the command line, e.g. make OPT=d.
+OPT         ?= o
 FLAGS       := -g
 EXTRA_CFLAGS :=
 STRIP_BIN   := no
 
+ifeq ($(OPT),d)
+	FLAGS     := -g
+	STRIP_BIN := no
+endif
 ifeq ($(OPT),o)
 	FLAGS     := -march=native -O3 -flto=auto
 	STRIP_BIN := yes
@@ -58,9 +68,9 @@ LIBS := -lwiringPi -lasound -lm -lfftw3 -lfftw3f -pthread -lncurses -lsqlite3 \
 	-lnsl -lrt -lssl -lcrypto
 
 # ---- Targets ----------------------------------------------------------------
-.PHONY: all zbitx dirs db clean distclean
+.PHONY: all zbitx panel-flash dirs db clean distclean
 
-all: zbitx
+all: zbitx panel-flash
 
 dirs:
 	@mkdir -p ./audio ./data ./web
@@ -89,8 +99,13 @@ zbitx: db
 	@echo "Version $(VERSION) brought to you by volunteers at Radio & Electronics Hub"
 	@echo "Please consider a small donation as a token of thanks.."
 
+# Front-panel firmware sender (see tools/panel_flash.c). Part of 'all', so
+# the update script builds it; the UPDATE button uses it to update the panel.
+panel-flash:
+	$(CC) -O2 -Wall -o zbitx-panel-flash tools/panel_flash.c src/i2c.c -lcrypto
+
 clean:
-	rm -f zbitx
+	rm -f zbitx zbitx-panel-flash
 
 distclean: clean
 	rm -f *.gcda

@@ -1,3 +1,7 @@
+# v5.15
+- Added support HPSDR Protocol 1 and TCI connections
+- Added software update button to the radio display menu
+
 # v5.14
 - Added support for complex callsigns in FT8
 - Added "CQ Only" Filter in front panel and web UI for FT8
