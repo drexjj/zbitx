@@ -27,7 +27,7 @@ git stash
 #git pull
 #git checkout main
 
-# Stay on the branch this radio is already running (main, hpsdr-iq, ...)
+# Stay on the branch this radio is already running (main, dev, ...)
 # instead of always switching to main.
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [ "$BRANCH" = "HEAD" ]; then BRANCH=main; fi
