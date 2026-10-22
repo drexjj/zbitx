@@ -1,3 +1,16 @@
+# v5.15
+- Added support HPSDR Protocol 1 and TCI connections
+- Added software update button to the radio display menu
+
+# v5.14
+- Added support for complex callsigns in FT8
+- Added "CQ Only" Filter in front panel and web UI for FT8
+- Fixed missing "my_callsign" messages in FT8
+- Refactored the headless build and removed GTK remnants
+- Removed unused source files
+- Requires v5.15f front panel firmware.
+
+
 # v5.13
 - Modified CW handler which now stores key events in buffer - thanks PA3CNO!
 - Increase waterfall speed for CW mode

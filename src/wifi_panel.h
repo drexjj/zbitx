@@ -9,7 +9,7 @@
  * Raspberry Pi OS Bookworm manages Wi-Fi through NetworkManager, so all the
  * heavy lifting here shells out to `nmcli`. Those calls (a scan in particular)
  * can block for several seconds, and the front-panel I2C poll loop
- * (zbitx_poll in sbitx_gtk.c) must never stall for that long, so every nmcli
+ * (zbitx_poll in sbitx_main.c) must never stall for that long, so every nmcli
  * operation runs on a short-lived background worker thread.
  *
  * The worker NEVER touches the bit-banged I2C bus itself — that bus is shared
@@ -19,7 +19,7 @@
  * then pushes any pending text to the panel with the normal {LABEL value}
  * blocks.
  *
- * Command flow (panel -> Pi), all routed through cmd_exec() in sbitx_gtk.c:
+ * Command flow (panel -> Pi), all routed through cmd_exec() in sbitx_main.c:
  *   "WIFI scan"                 -> start an async scan; results land in WIFI_LIST
  *   "WIFI status"               -> push current SSID / IP / signal to the panel
  *   "WIFI connect <ssid>\t<psk>"-> join a network (psk may be empty for open)

@@ -1,3 +1,6 @@
+#include "iq_baseband.h"
+#include "hpsdr_p1.h"
+#include "tci_audio.h"
 #include "cw_runtime.h"
 #include "radio_control.h"
 #include "modem_cw.h"
@@ -42,7 +45,6 @@ FILE *pf_debug = NULL;
 #define TX_LINE 4
 #define RX_LINE 16
 #define TX_POWER 27
-#define BAND_SELECT 5
 #define LPF_A 5
 #define LPF_B 6
 #define LPF_C 10
@@ -104,11 +106,19 @@ static int tx_use_line = 0;
 struct rx *rx_list = NULL;
 struct rx *tx_list = NULL;
 struct filter *tx_filter; // convolution filter
+
+// Set by sound_process() for each block while a TCI client is transmitting
+// its own audio (tci_audio_tx() filled input_mic). In CW/CWR, tx_process()
+// then sends that audio - the client's keyed, shaped sidetone, as SDR oxide
+// sends it - instead of zbitx's keyer.
+static int tx_from_tci_audio = 0;
+// Full-scale TCI audio maps to the keyer's key-down level
+// (cw_tx_get_sample()'s 1/8, then /3 below).
+#define TCI_CW_AUDIO_SCALE (1.0 / 24.0)
 static double tx_amp = 0.0;
 static double alc_level = 1.0;
 static int tr_relay = 0;
 static int rx_pitch = 600;   // should probably us get_pitch() directly
-static int bridge_compensation = 100;
 static double voice_clip_level = 0.04;
 static int in_calibration = 1; // this turns off alc, clipping et al
 static double ssb_val = 1.0;   // W9JES
@@ -226,6 +236,14 @@ void radio_tune_to(u_int32_t f)
 	else
 		si5351bx_setfreq(2, f + bfo_freq + bfo_freq_runtime_offset - shift_hz + TUNING_SHIFT);
 
+	// The pitch folded into clk2 above moves the dial off the IF center;
+	// tell the I/Q front end so its DC stays on the dial frequency.
+	if (rx_list->mode == MODE_CW)
+		iq_baseband_set_offset(pitch);
+	else if (rx_list->mode == MODE_CWR)
+		iq_baseband_set_offset(-pitch);
+	else
+		iq_baseband_set_offset(0);
 	//  printf("Setting radio pitch %d\n", pitch);
 }
 long set_bfo_offset(int offset, long cur_freq)
@@ -1694,20 +1712,6 @@ void rx_linear(int32_t *input_rx, int32_t *input_mic,
 	}
 #endif
 }
-/* read_power() has been removed.
- * The ATtiny85 SWR bridge at I2C 0x8 is no longer present in hardware.
- * fwdpower, vswr, and vbatt_raw are now set directly by the RP2040 front
- * panel text parser in zbitx_poll() inside sbitx_gtk.c.
- * The RP2040 sends: "vbatt N\npower N\nvswr N\n" on every on_request() call.
- *
- * ALC still works: the GTK parser updates fwdpower from the RP2040 value
- * which carries the same scaled ADC units the old ATtiny85 produced.
- */
-void read_power()
-{
-	/* no-op: data now comes from RP2040 front panel via sbitx_gtk.c */
-}
-
 static int tx_process_restart = 0;
 
 void tx_process(
@@ -1838,6 +1842,8 @@ void tx_process(
 			i_sample = (1.0 * (vfo_read(&tone_a) + vfo_read(&tone_b))) / 50000000000.0;
 		else if (r->mode == MODE_CALIBRATE)
 			i_sample = (1.0 * (vfo_read(&tone_a))) / 30000000000.0;
+		else if ((r->mode == MODE_CW || r->mode == MODE_CWR) && tx_from_tci_audio)
+			i_sample = (1.0 * input_mic[j]) / 2147483647.0 * TCI_CW_AUDIO_SCALE;
 		else if (r->mode == MODE_CW || r->mode == MODE_CWR || r->mode == MODE_FT8)
 			i_sample = modem_next_sample(r->mode) / 3;
 		else if (r->mode == MODE_AM)
@@ -2003,10 +2009,7 @@ void tx_process(
 	//  (mic/EQ/compression/mute + STEP1 copy) and tail (sdr_modulation_update)
 	//  that this snapshot never captured.)
  
-	// read_power() is not called here. On this hardware the Pico 2040 (I2C address
-	// 0x0a) handles SWR/power measurement and sends the data as text via zbitx_poll().
-	// The old read_power() used address 0x08 (wrong) and binary protocol (wrong);
-	// it was dead code that never successfully read anything on this hardware.
+	// Forward power and SWR come from the Pico (I2C 0x0a) via zbitx_poll().
  
 	// sdr_modulation_update is called once here.
 	// Previously it was called twice (once here and once at the very end after
@@ -2156,6 +2159,12 @@ void sound_process(
 	int32_t *output_speaker, int32_t *output_tx,
 	int n_samples)
 {
+    // External I/Q (HPSDR, TCI). Independent of the demodulator below, so
+    // it runs even when the DSP lock is busy; silence while transmitting.
+    iq_baseband_process(input_rx, n_samples, in_tx);
+    // A TCI client transmitting its own audio replaces the mic input.
+    tx_from_tci_audio = tci_audio_tx(input_mic, n_samples, in_tx);
+
     if (!radio_dsp_trylock()) {
         memset(output_speaker, 0, n_samples * sizeof(*output_speaker));
         memset(output_tx, 0, n_samples * sizeof(*output_tx));
@@ -2176,6 +2185,7 @@ void sound_process(
 	{
 		wav_record(in_tx == 0 ? output_speaker : input_mic, n_samples);
 	}
+	tci_audio_rx(output_speaker, n_samples, in_tx);
     radio_dsp_unlock();
 }
 
@@ -2261,6 +2271,16 @@ void resetup_oscillators()
 	si5351_reset();
 }
 static int hw_init_index = 0;
+// hw_settings.ini keys for the HPSDR server (see hpsdr_p1.h)
+static int hpsdr_enable = 1;
+static int hpsdr_allow_mox = 0;
+static double hpsdr_iq_gain_db = 0.0;
+static int hpsdr_board_id = 1;
+static int iq_swap = 0;
+// TCI server (tci.c); read by sbitx_main.c's startup
+int tci_port = 50001;
+char tci_bind[32] = "";
+
 static int hw_settings_handler(void *user, const char *section,
 							   const char *name, const char *value)
 {
@@ -2285,6 +2305,21 @@ static int hw_settings_handler(void *user, const char *section,
 		ssb_val = atof(value);
 	if (!strcmp(name, "hw"))
 		sbitx_version = atoi(value);
+	// HPSDR Protocol 1 server and its I/Q front end (hpsdr_p1.c, iq_baseband.c)
+	if (!strcmp(name, "hpsdr_enable"))
+		hpsdr_enable = atoi(value);
+	if (!strcmp(name, "hpsdr_allow_mox"))
+		hpsdr_allow_mox = atoi(value);
+	if (!strcmp(name, "hpsdr_iq_gain_db"))
+		hpsdr_iq_gain_db = atof(value);
+	if (!strcmp(name, "hpsdr_board_id"))
+		hpsdr_board_id = atoi(value);
+	if (!strcmp(name, "iq_swap"))
+		iq_swap = atoi(value);
+	if (!strcmp(name, "tci_port"))
+		tci_port = atoi(value);
+	if (!strcmp(name, "tci_bind"))
+		snprintf(tci_bind, sizeof(tci_bind), "%s", value);
 	// Add TCXO Calibration W9JES/KK4DAS
 	if (!strcmp(section, "tcxo"))
 	{
@@ -2757,8 +2792,12 @@ void setup()
 	tx_list->tuned_bin = tx_shift;
 	tx_init(7000000, MODE_LSB, -3000, -150);
 
-	/* Version detection: ATtiny85 SWR bridge at I2C 0x8 has been removed.
-	 * hw version is now read from hw_settings.ini (hw= key).
+	// Time-domain I/Q for HPSDR, from the same IF rx_linear() rotates down.
+	iq_baseband_init(tx_shift * (96000.0 / MAX_BINS));
+	iq_baseband_set_swap(iq_swap);
+	hpsdr_configure(hpsdr_enable, hpsdr_allow_mox, hpsdr_iq_gain_db, hpsdr_board_id);
+
+	/* hw version is read from hw_settings.ini (hw= key).
 	 * If not set there, default to SBITX_V4 (zBitx with RP2040 front panel). */
 	if (sbitx_version == -1)
 		sbitx_version = SBITX_V4;
@@ -2944,10 +2983,6 @@ static void sdr_request_impl(char *request, char *response)
 		tx_drive = atoi(value);
 		if (in_tx)
 			set_tx_power_levels();
-	}
-	else if (!strcmp(cmd, "bridge"))
-	{
-		bridge_compensation = atoi(value);
 	}
 	else if (!strcmp(cmd, "r1:gain"))
 	{

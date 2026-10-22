@@ -81,10 +81,15 @@ int hd_message_parse(struct hd_message_struct* p_message, char* raw_message) {
 	if (r < 0) return r;
 	r = hd_next_token(raw_message, r, p_message->m2, 32, " ");
 	if (r < 0) return r;
+	// m3 is optional: "CQ PJ4/K1ABC" (a compound call cannot send a grid)
+	// and "<...> RY8CAA" are complete two-word messages
 	r = hd_next_token(raw_message, r, p_message->m3, 32, " ");
-	if (r < 0) return r;
-	r = hd_next_token(raw_message, r, p_message->m4, 32, " ");
 	if (r < -1) return r;
+	p_message->m4[0] = 0;
+	if (r >= 0) {
+		r = hd_next_token(raw_message, r, p_message->m4, 32, " ");
+		if (r < -1) return r;
+	}
 	return 0;
 }
 

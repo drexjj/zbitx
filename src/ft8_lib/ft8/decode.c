@@ -2,18 +2,35 @@
 #include "constants.h"
 #include "crc.h"
 #include "ldpc.h"
-#include "unpack.h"
 
 #include <stdbool.h>
 #include <math.h>
+
+// #define LOG_LEVEL LOG_DEBUG
+// #include "debug.h"
+
+// Lookup table for y = 10*log10(1 + 10^(x/10)), where
+//   y - increase in signal level dB when adding a weaker independent signal
+//   x - specific relative strength of the weaker signal in dB
+// Table index corresponds to x in dB (index 0: 0 dB, index 1: -1 dB etc)
+static const float db_power_sum[40] = {
+    3.01029995663981f, 2.53901891043867f, 2.1244260279434f, 1.76434862436485f, 1.45540463109294f,
+    1.19331048066095f, 0.973227937086954f, 0.790097496525665f, 0.638920341433796f, 0.514969420252302f,
+    0.413926851582251f, 0.331956199884278f, 0.265723755961025f, 0.212384019142551f, 0.16954289279533f,
+    0.135209221080382f, 0.10774225511957f, 0.085799992300358f, 0.06829128312453f, 0.054333142200458f,
+    0.043213737826426f, 0.034360947517284f, 0.027316043349389f, 0.021711921641451f, 0.017255250287928f,
+    0.013711928326833f, 0.010895305999614f, 0.008656680827934f, 0.006877654943187f, 0.005464004928574f,
+    0.004340774793186f, 0.003448354310253f, 0.002739348814965f, 0.002176083232619f, 0.001728613409904f,
+    0.001373142636584f, 0.001090761428665f, 0.000866444976964f, 0.000688255828734f, 0.000546709946839f
+};
 
 /// Compute log likelihood log(p(1) / p(0)) of 174 message bits for later use in soft-decision LDPC decoding
 /// @param[in] wf Waterfall data collected during message slot
 /// @param[in] cand Candidate to extract the message from
 /// @param[in] code_map Symbol encoding map
 /// @param[out] log174 Output of decoded log likelihoods for each of the 174 message bits
-static void ft4_extract_likelihood(const waterfall_t* wf, const candidate_t* cand, float* log174);
-static void ft8_extract_likelihood(const waterfall_t* wf, const candidate_t* cand, float* log174);
+static void ft4_extract_likelihood(const ftx_waterfall_t* wf, const ftx_candidate_t* cand, float* log174);
+static void ft8_extract_likelihood(const ftx_waterfall_t* wf, const ftx_candidate_t* cand, float* log174);
 
 /// Packs a string of bits each represented as a zero/non-zero byte in bit_array[],
 /// as a string of packed bits starting from the MSB of the first byte of packed[]
@@ -24,109 +41,30 @@ static void pack_bits(const uint8_t bit_array[], int num_bits, uint8_t packed[])
 
 static float max2(float a, float b);
 static float max4(float a, float b, float c, float d);
-static void heapify_down(candidate_t heap[], int heap_size);
-static void heapify_up(candidate_t heap[], int heap_size);
+static void heapify_down(ftx_candidate_t heap[], int heap_size);
+static void heapify_up(ftx_candidate_t heap[], int heap_size);
 
 static void ftx_normalize_logl(float* log174);
-static void ft4_extract_symbol(const uint8_t* wf, float* logl);
-static void ft8_extract_symbol(const uint8_t* wf, float* logl);
-static void ft8_decode_multi_symbols(const uint8_t* wf, int num_bins, int n_syms, int bit_idx, float* log174);
+static void ft4_extract_symbol(const WF_ELEM_T* wf, float* logl);
+static void ft8_extract_symbol(const WF_ELEM_T* wf, float* logl);
+static void ft8_decode_multi_symbols(const WF_ELEM_T* wf, int num_bins, int n_syms, int bit_idx, float* log174);
 
-static int get_index(const waterfall_t* wf, const candidate_t* candidate)
+static const WF_ELEM_T* get_cand_mag(const ftx_waterfall_t* wf, const ftx_candidate_t* candidate)
 {
     int offset = candidate->time_offset;
     offset = (offset * wf->time_osr) + candidate->time_sub;
     offset = (offset * wf->freq_osr) + candidate->freq_sub;
     offset = (offset * wf->num_bins) + candidate->freq_offset;
-    return offset;
+    return wf->mag + offset;
 }
 
-static void swap(int* xp, int* yp)
-{
-	int temp = *xp;
-	*xp = *yp;
-	*yp = temp;
-}
- 
-// Function to perform Selection Sort
-static void selectionSort(int arr[], int n)
-{
-	int i, j, min_idx;
-  
-	// One by one move boundary of unsorted subarray
-	for (i = 0; i < n-1; i++)
-	{
-		// Find the minimum element in unsorted array
-		min_idx = i;
-		for (j = i+1; j < n; j++)
-		  if (arr[j] < arr[min_idx])
-			min_idx = j;
-  
-		// Swap the found minimum element with the first element
-		swap(&arr[min_idx], &arr[i]);
-	}
-}
-
-static int get_snr(const waterfall_t* wf, candidate_t candidate)
-{
-	
-	//array with wf.num_blocks (row of watterfall) x 8*wf.freq_osr (signals witdh)
-	//Get this watterfall zoom on the candidate symbols
-	//Sort max to min and calculate max/min = ft8snr and return with substract of -26db for get snr on 2500hz
-	
-	float freq_hz = (candidate.freq_offset + (float)candidate.freq_sub / 2) / 0.160f;
-	
-	float minC = 0, maxC = 0;
-	
-	int i = 0;
-	while(i<wf->num_blocks){
-		
-		int candidate_zoom[8*wf->freq_osr*wf->time_osr];
-		
-		for(int j = 0; j< 8; j++){
-			
-			for(int k = 0; k<wf->freq_osr*wf->time_osr; k++){
-			
-			candidate_zoom[(j*wf->freq_osr*wf->time_osr)+k] = wf->mag[( (i * wf->block_stride) + candidate.freq_offset + candidate.freq_sub + (j*wf->freq_osr*wf->time_osr) + k )];
-			}
-
-		}
-
-		
-		selectionSort(candidate_zoom,8*wf->freq_osr*wf->time_osr);
-		
-		for(int j = 0; j< wf->freq_osr*wf->time_osr*2; j++){
-			minC += candidate_zoom[j+(2*wf->freq_osr*wf->time_osr)];
-			
-		}
-		
-		for(int j = 1; j<= wf->freq_osr*wf->time_osr; j++){
-			maxC += candidate_zoom[(8*wf->freq_osr*wf->time_osr)-j];
-			
-		}
-		
-		i++;
-	
-	}
-
-	minC = minC / (wf->num_blocks*wf->freq_osr*wf->time_osr*2);
-	maxC = maxC / (wf->num_blocks*wf->freq_osr*wf->time_osr);
-	
-	int min = (int)(minC/2 - 240);
-	int max = (int)(maxC/2 - 240);
-	int snr= max - min - 26;
-	
-	return snr;
-	
-}
-
-static int ft8_sync_score(const waterfall_t* wf, const candidate_t* candidate)
+static int ft8_sync_score(const ftx_waterfall_t* wf, const ftx_candidate_t* candidate)
 {
     int score = 0;
     int num_average = 0;
 
     // Get the pointer to symbol 0 of the candidate
-    const uint8_t* mag_cand = wf->mag + get_index(wf, candidate);
+    const WF_ELEM_T* mag_cand = get_cand_mag(wf, candidate);
 
     // Compute average score over sync symbols (m+k = 0-7, 36-43, 72-79)
     for (int m = 0; m < FT8_NUM_SYNC; ++m)
@@ -142,7 +80,7 @@ static int ft8_sync_score(const waterfall_t* wf, const candidate_t* candidate)
                 break;
 
             // Get the pointer to symbol 'block' of the candidate
-            const uint8_t* p8 = mag_cand + (block * wf->block_stride);
+            const WF_ELEM_T* p8 = mag_cand + (block * wf->block_stride);
 
             // Weighted difference between the expected and all other symbols
             // Does not work as well as the alternative score below
@@ -156,25 +94,25 @@ static int ft8_sync_score(const waterfall_t* wf, const candidate_t* candidate)
             if (sm > 0)
             {
                 // look at one frequency bin lower
-                score += p8[sm] - p8[sm - 1];
+                score += WF_ELEM_MAG_INT(p8[sm]) - WF_ELEM_MAG_INT(p8[sm - 1]);
                 ++num_average;
             }
             if (sm < 7)
             {
                 // look at one frequency bin higher
-                score += p8[sm] - p8[sm + 1];
+                score += WF_ELEM_MAG_INT(p8[sm]) - WF_ELEM_MAG_INT(p8[sm + 1]);
                 ++num_average;
             }
             if ((k > 0) && (block_abs > 0))
             {
                 // look one symbol back in time
-                score += p8[sm] - p8[sm - wf->block_stride];
+                score += WF_ELEM_MAG_INT(p8[sm]) - WF_ELEM_MAG_INT(p8[sm - wf->block_stride]);
                 ++num_average;
             }
             if (((k + 1) < FT8_LENGTH_SYNC) && ((block_abs + 1) < wf->num_blocks))
             {
                 // look one symbol forward in time
-                score += p8[sm] - p8[sm + wf->block_stride];
+                score += WF_ELEM_MAG_INT(p8[sm]) - WF_ELEM_MAG_INT(p8[sm + wf->block_stride]);
                 ++num_average;
             }
         }
@@ -186,13 +124,13 @@ static int ft8_sync_score(const waterfall_t* wf, const candidate_t* candidate)
     return score;
 }
 
-static int ft4_sync_score(const waterfall_t* wf, const candidate_t* candidate)
+static int ft4_sync_score(const ftx_waterfall_t* wf, const ftx_candidate_t* candidate)
 {
     int score = 0;
     int num_average = 0;
 
     // Get the pointer to symbol 0 of the candidate
-    const uint8_t* mag_cand = wf->mag + get_index(wf, candidate);
+    const WF_ELEM_T* mag_cand = get_cand_mag(wf, candidate);
 
     // Compute average score over sync symbols (block = 1-4, 34-37, 67-70, 100-103)
     for (int m = 0; m < FT4_NUM_SYNC; ++m)
@@ -208,7 +146,7 @@ static int ft4_sync_score(const waterfall_t* wf, const candidate_t* candidate)
                 break;
 
             // Get the pointer to symbol 'block' of the candidate
-            const uint8_t* p4 = mag_cand + (block * wf->block_stride);
+            const WF_ELEM_T* p4 = mag_cand + (block * wf->block_stride);
 
             int sm = kFT4_Costas_pattern[m][k]; // Index of the expected bin
 
@@ -219,25 +157,25 @@ static int ft4_sync_score(const waterfall_t* wf, const candidate_t* candidate)
             if (sm > 0)
             {
                 // look at one frequency bin lower
-                score += p4[sm] - p4[sm - 1];
+                score += WF_ELEM_MAG_INT(p4[sm]) - WF_ELEM_MAG_INT(p4[sm - 1]);
                 ++num_average;
             }
             if (sm < 3)
             {
                 // look at one frequency bin higher
-                score += p4[sm] - p4[sm + 1];
+                score += WF_ELEM_MAG_INT(p4[sm]) - WF_ELEM_MAG_INT(p4[sm + 1]);
                 ++num_average;
             }
             if ((k > 0) && (block_abs > 0))
             {
                 // look one symbol back in time
-                score += p4[sm] - p4[sm - wf->block_stride];
+                score += WF_ELEM_MAG_INT(p4[sm]) - WF_ELEM_MAG_INT(p4[sm - wf->block_stride]);
                 ++num_average;
             }
             if (((k + 1) < FT4_LENGTH_SYNC) && ((block_abs + 1) < wf->num_blocks))
             {
                 // look one symbol forward in time
-                score += p4[sm] - p4[sm + wf->block_stride];
+                score += WF_ELEM_MAG_INT(p4[sm]) - WF_ELEM_MAG_INT(p4[sm + wf->block_stride]);
                 ++num_average;
             }
         }
@@ -249,10 +187,13 @@ static int ft4_sync_score(const waterfall_t* wf, const candidate_t* candidate)
     return score;
 }
 
-int ft8_find_sync(const waterfall_t* wf, int num_candidates, candidate_t heap[], int min_score)
+int ftx_find_candidates(const ftx_waterfall_t* wf, int num_candidates, ftx_candidate_t heap[], int min_score)
 {
+    int (*sync_fun)(const ftx_waterfall_t*, const ftx_candidate_t*) = (wf->protocol == FTX_PROTOCOL_FT4) ? ft4_sync_score : ft8_sync_score;
+    int num_tones = (wf->protocol == FTX_PROTOCOL_FT4) ? 4 : 8;
+
     int heap_size = 0;
-    candidate_t candidate;
+    ftx_candidate_t candidate;
 
     // Here we allow time offsets that exceed signal boundaries, as long as we still have all data bits.
     // I.e. we can afford to skip the first 7 or the last 7 Costas symbols, as long as we track how many
@@ -261,28 +202,21 @@ int ft8_find_sync(const waterfall_t* wf, int num_candidates, candidate_t heap[],
     {
         for (candidate.freq_sub = 0; candidate.freq_sub < wf->freq_osr; ++candidate.freq_sub)
         {
-            for (candidate.time_offset = -12; candidate.time_offset < 24; ++candidate.time_offset)
+            for (candidate.time_offset = -10; candidate.time_offset < 20; ++candidate.time_offset)
             {
-                for (candidate.freq_offset = 0; (candidate.freq_offset + 7) < wf->num_bins; ++candidate.freq_offset)
+                for (candidate.freq_offset = 0; (candidate.freq_offset + num_tones - 1) < wf->num_bins; ++candidate.freq_offset)
                 {
-                    if (wf->protocol == PROTO_FT4)
-                    {
-                        candidate.score = ft4_sync_score(wf, &candidate);
-                    }
-                    else
-                    {
-                        candidate.score = ft8_sync_score(wf, &candidate);
-                    }
+                    candidate.score = sync_fun(wf, &candidate);
 
                     if (candidate.score < min_score)
                         continue;
 
                     // If the heap is full AND the current candidate is better than
                     // the worst in the heap, we remove the worst and make space
-                    if (heap_size == num_candidates && candidate.score > heap[0].score)
+                    if ((heap_size == num_candidates) && (candidate.score > heap[0].score))
                     {
-                        heap[0] = heap[heap_size - 1];
                         --heap_size;
+                        heap[0] = heap[heap_size];
                         heapify_down(heap, heap_size);
                     }
 
@@ -302,23 +236,23 @@ int ft8_find_sync(const waterfall_t* wf, int num_candidates, candidate_t heap[],
     int len_unsorted = heap_size;
     while (len_unsorted > 1)
     {
-        candidate_t tmp = heap[len_unsorted - 1];
+        // Take the top (index 0) element which is guaranteed to have the smallest score,
+        // exchange it with the last element in the heap, and decrease the heap size.
+        // Then restore the heap property in the new, smaller heap.
+        // At the end the elements will be sorted in descending order.
+        ftx_candidate_t tmp = heap[len_unsorted - 1];
         heap[len_unsorted - 1] = heap[0];
         heap[0] = tmp;
         len_unsorted--;
         heapify_down(heap, len_unsorted);
     }
 
-		// Farhan, snr code
-		for (int i = 0; i < heap_size; i++)
-			heap[i].snr = get_snr(wf, heap[i]);
-
     return heap_size;
 }
 
-static void ft4_extract_likelihood(const waterfall_t* wf, const candidate_t* cand, float* log174)
+static void ft4_extract_likelihood(const ftx_waterfall_t* wf, const ftx_candidate_t* cand, float* log174)
 {
-    const uint8_t* mag_cand = wf->mag + get_index(wf, cand);
+    const WF_ELEM_T* mag = get_cand_mag(wf, cand); // Pointer to 4 magnitude bins of the first symbol
 
     // Go over FSK tones and skip Costas sync symbols
     for (int k = 0; k < FT4_ND; ++k)
@@ -337,17 +271,14 @@ static void ft4_extract_likelihood(const waterfall_t* wf, const candidate_t* can
         }
         else
         {
-            // Pointer to 4 bins of the current symbol
-            const uint8_t* ps = mag_cand + (sym_idx * wf->block_stride);
-
-            ft4_extract_symbol(ps, log174 + bit_idx);
+            ft4_extract_symbol(mag + (sym_idx * wf->block_stride), log174 + bit_idx);
         }
     }
 }
 
-static void ft8_extract_likelihood(const waterfall_t* wf, const candidate_t* cand, float* log174)
+static void ft8_extract_likelihood(const ftx_waterfall_t* wf, const ftx_candidate_t* cand, float* log174)
 {
-    const uint8_t* mag_cand = wf->mag + get_index(wf, cand);
+    const WF_ELEM_T* mag = get_cand_mag(wf, cand); // Pointer to 8 magnitude bins of the first symbol
 
     // Go over FSK tones and skip Costas sync symbols
     for (int k = 0; k < FT8_ND; ++k)
@@ -367,10 +298,7 @@ static void ft8_extract_likelihood(const waterfall_t* wf, const candidate_t* can
         }
         else
         {
-            // Pointer to 8 bins of the current symbol
-            const uint8_t* ps = mag_cand + (sym_idx * wf->block_stride);
-
-            ft8_extract_symbol(ps, log174 + bit_idx);
+            ft8_extract_symbol(mag + (sym_idx * wf->block_stride), log174 + bit_idx);
         }
     }
 }
@@ -396,10 +324,10 @@ static void ftx_normalize_logl(float* log174)
     }
 }
 
-bool ft8_decode(const waterfall_t* wf, const candidate_t* cand, message_t* message, int max_iterations, decode_status_t* status)
+bool ftx_decode_candidate(const ftx_waterfall_t* wf, const ftx_candidate_t* cand, int max_iterations, ftx_message_t* message, ftx_decode_status_t* status)
 {
     float log174[FTX_LDPC_N]; // message bits encoded as likelihood
-    if (wf->protocol == PROTO_FT4)
+    if (wf->protocol == FTX_PROTOCOL_FT4)
     {
         ft4_extract_likelihood(wf, cand, log174);
     }
@@ -435,26 +363,27 @@ bool ft8_decode(const waterfall_t* wf, const candidate_t* cand, message_t* messa
         return false;
     }
 
-    if (wf->protocol == PROTO_FT4)
+    // Reuse CRC value as a hash for the message (TODO: 14 bits only, should perhaps use full 16 or 32 bits?)
+    message->hash = status->crc_calculated;
+
+    if (wf->protocol == FTX_PROTOCOL_FT4)
     {
         // '[..] for FT4 only, in order to avoid transmitting a long string of zeros when sending CQ messages,
         // the assembled 77-bit message is bitwise exclusive-OR’ed with [a] pseudorandom sequence before computing the CRC and FEC parity bits'
         for (int i = 0; i < 10; ++i)
         {
-            a91[i] ^= kFT4_XOR_sequence[i];
+            message->payload[i] = a91[i] ^ kFT4_XOR_sequence[i];
+        }
+    }
+    else
+    {
+        for (int i = 0; i < 10; ++i)
+        {
+            message->payload[i] = a91[i];
         }
     }
 
-    status->unpack_status = unpack77(a91, message->text);
-
-    if (status->unpack_status < 0)
-    {
-        return false;
-    }
-
-    // Reuse binary message CRC as hash value for the message
-    message->hash = status->crc_extracted;
-
+    // LOG(LOG_DEBUG, "Decoded message (CRC %04x), trying to unpack...\n", status->crc_extracted);
     return true;
 }
 
@@ -468,49 +397,53 @@ static float max4(float a, float b, float c, float d)
     return max2(max2(a, b), max2(c, d));
 }
 
-static void heapify_down(candidate_t heap[], int heap_size)
+static void heapify_down(ftx_candidate_t heap[], int heap_size)
 {
     // heapify from the root down
-    int current = 0;
+    int current = 0; // root node
     while (true)
     {
-        int largest = current;
         int left = 2 * current + 1;
         int right = left + 1;
 
-        if (left < heap_size && heap[left].score < heap[largest].score)
+        // Find the smallest value of (parent, left child, right child)
+        int smallest = current;
+        if ((left < heap_size) && (heap[left].score < heap[smallest].score))
         {
-            largest = left;
+            smallest = left;
         }
-        if (right < heap_size && heap[right].score < heap[largest].score)
+        if ((right < heap_size) && (heap[right].score < heap[smallest].score))
         {
-            largest = right;
+            smallest = right;
         }
-        if (largest == current)
+
+        if (smallest == current)
         {
             break;
         }
 
-        candidate_t tmp = heap[largest];
-        heap[largest] = heap[current];
+        // Exchange the current node with the smallest child and move down to it
+        ftx_candidate_t tmp = heap[smallest];
+        heap[smallest] = heap[current];
         heap[current] = tmp;
-        current = largest;
+        current = smallest;
     }
 }
 
-static void heapify_up(candidate_t heap[], int heap_size)
+static void heapify_up(ftx_candidate_t heap[], int heap_size)
 {
     // heapify from the last node up
     int current = heap_size - 1;
     while (current > 0)
     {
         int parent = (current - 1) / 2;
-        if (heap[current].score >= heap[parent].score)
+        if (!(heap[current].score < heap[parent].score))
         {
             break;
         }
 
-        candidate_t tmp = heap[parent];
+        // Exchange the current node with its parent and move up
+        ftx_candidate_t tmp = heap[parent];
         heap[parent] = heap[current];
         heap[current] = tmp;
         current = parent;
@@ -518,14 +451,14 @@ static void heapify_up(candidate_t heap[], int heap_size)
 }
 
 // Compute unnormalized log likelihood log(p(1) / p(0)) of 2 message bits (1 FSK symbol)
-static void ft4_extract_symbol(const uint8_t* wf, float* logl)
+static void ft4_extract_symbol(const WF_ELEM_T* wf, float* logl)
 {
     // Cleaned up code for the simple case of n_syms==1
     float s2[4];
 
     for (int j = 0; j < 4; ++j)
     {
-        s2[j] = (float)wf[kFT4_Gray_map[j]];
+        s2[j] = WF_ELEM_MAG(wf[kFT4_Gray_map[j]]);
     }
 
     logl[0] = max2(s2[2], s2[3]) - max2(s2[0], s2[1]);
@@ -533,23 +466,49 @@ static void ft4_extract_symbol(const uint8_t* wf, float* logl)
 }
 
 // Compute unnormalized log likelihood log(p(1) / p(0)) of 3 message bits (1 FSK symbol)
-static void ft8_extract_symbol(const uint8_t* wf, float* logl)
+static void ft8_extract_symbol(const WF_ELEM_T* wf, float* logl)
 {
     // Cleaned up code for the simple case of n_syms==1
+#if 1
     float s2[8];
 
     for (int j = 0; j < 8; ++j)
     {
-        s2[j] = (float)wf[kFT8_Gray_map[j]];
+        s2[j] = WF_ELEM_MAG(wf[kFT8_Gray_map[j]]);
     }
 
     logl[0] = max4(s2[4], s2[5], s2[6], s2[7]) - max4(s2[0], s2[1], s2[2], s2[3]);
     logl[1] = max4(s2[2], s2[3], s2[6], s2[7]) - max4(s2[0], s2[1], s2[4], s2[5]);
     logl[2] = max4(s2[1], s2[3], s2[5], s2[7]) - max4(s2[0], s2[2], s2[4], s2[6]);
+#else
+    float a[7] = {
+        // (float)wf[7] - (float)wf[0], // 0: p(111) / p(000)
+        (float)wf[5] - (float)wf[2], // 0: p(100) / p(011)
+        (float)wf[3] - (float)wf[0], // 1: p(010) / p(000)
+        (float)wf[6] - (float)wf[3], // 2: p(101) / p(010)
+        (float)wf[6] - (float)wf[2], // 3: p(101) / p(011)
+        (float)wf[7] - (float)wf[4], // 4: p(111) / p(110)
+        (float)wf[4] - (float)wf[1], // 5: p(110) / p(001)
+        (float)wf[5] - (float)wf[1]  // 6: p(100) / p(001)
+    };
+    float k = 1.0f;
+
+    // logl[0] = k * (a[0] + a[2] + a[3] + a[5] + a[6]) / 5;
+    // logl[1] = k * (a[0] / 4 + (a[1] - a[3]) * 5 / 24 + (a[5] - a[2]) / 6 + (a[4] - a[6]) / 24);
+    // logl[2] = k * (a[0] / 4 + (a[1] - a[3]) / 24 + (a[2] - a[5]) / 6 + (a[4] - a[6]) * 5 / 24);
+    logl[0] = k * (a[1] / 6 + a[2] / 3 + a[3] / 6 + a[4] / 6 + a[5] / 3 + a[6] / 6);
+    logl[1] = k * (-a[0] / 4 + a[1] * 7 / 24 + (a[4] - a[3]) / 8 + a[5] / 3 + a[6] / 24);
+    logl[2] = k * (-a[0] / 4 + (a[1] - a[6]) / 8 + a[2] / 3 + a[3] / 24 + a[4] * 7 / 24 - a[5] * 5 / 18);
+#endif
+    // for (int i = 0; i < 8; ++i)
+    //     printf("%d ", WF_ELEM_MAG_INT(wf[i]));
+    // for (int i = 0; i < 3; ++i)
+    //     printf("%.1f ", logl[i]);
+    // printf("\n");
 }
 
 // Compute unnormalized log likelihood log(p(1) / p(0)) of bits corresponding to several FSK symbols at once
-static void ft8_decode_multi_symbols(const uint8_t* wf, int num_bins, int n_syms, int bit_idx, float* log174)
+static void ft8_decode_multi_symbols(const WF_ELEM_T* wf, int num_bins, int n_syms, int bit_idx, float* log174)
 {
     const int n_bits = 3 * n_syms;
     const int n_tones = (1 << n_bits);
@@ -561,20 +520,20 @@ static void ft8_decode_multi_symbols(const uint8_t* wf, int num_bins, int n_syms
         int j1 = j & 0x07;
         if (n_syms == 1)
         {
-            s2[j] = (float)wf[kFT8_Gray_map[j1]];
+            s2[j] = WF_ELEM_MAG(wf[kFT8_Gray_map[j1]]);
             continue;
         }
         int j2 = (j >> 3) & 0x07;
         if (n_syms == 2)
         {
-            s2[j] = (float)wf[kFT8_Gray_map[j2]];
-            s2[j] += (float)wf[kFT8_Gray_map[j1] + 4 * num_bins];
+            s2[j] = WF_ELEM_MAG(wf[kFT8_Gray_map[j2]]);
+            s2[j] += WF_ELEM_MAG(wf[kFT8_Gray_map[j1] + 4 * num_bins]);
             continue;
         }
         int j3 = (j >> 6) & 0x07;
-        s2[j] = (float)wf[kFT8_Gray_map[j3]];
-        s2[j] += (float)wf[kFT8_Gray_map[j2] + 4 * num_bins];
-        s2[j] += (float)wf[kFT8_Gray_map[j1] + 8 * num_bins];
+        s2[j] = WF_ELEM_MAG(wf[kFT8_Gray_map[j3]]);
+        s2[j] += WF_ELEM_MAG(wf[kFT8_Gray_map[j2] + 4 * num_bins]);
+        s2[j] += WF_ELEM_MAG(wf[kFT8_Gray_map[j1] + 8 * num_bins]);
     }
 
     // Extract bit significance (and convert them to float)
@@ -631,4 +590,3 @@ static void pack_bits(const uint8_t bit_array[], int num_bits, uint8_t packed[])
         }
     }
 }
-
