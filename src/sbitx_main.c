@@ -4182,6 +4182,22 @@ void zbitx_poll(int all){
 	delay(1);
 	i2cbb_write_i2c_block_data(0x0a, '{', strlen(buff), buff);
 
+	// UTC clock for the front panel's MENU button. Sent only when the minute
+	// changes (or on a full re-sync), so it costs one short write a minute.
+	{
+		static char last_clock[8] = "";
+		char clock_now[8];
+		time_t t_now = time(NULL);
+		struct tm *t_utc = gmtime(&t_now);
+		strftime(clock_now, sizeof(clock_now), "%H:%M", t_utc);
+		if (all || strcmp(clock_now, last_clock)){
+			sprintf(buff, "CLOCK %s}", clock_now);
+			delay(1);
+			if (!i2cbb_write_i2c_block_data(0x0a, '{', strlen(buff), buff))
+				strcpy(last_clock, clock_now);
+		}
+	}
+
 
 	if(update_logs){
 		zbitx_logs();
