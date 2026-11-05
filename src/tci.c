@@ -55,6 +55,8 @@ struct client {
   int buffering_ms;
   int rx_sensors, rx_sensors_ms;
   long long rx_sensors_due;
+  int spectrum, spectrum_ms; // zbitx_spectrum extension
+  long long spectrum_due;
 };
 
 // State as last sent to the clients.
@@ -644,6 +646,16 @@ static void handle(int slot, char *cmd) {
     if (argc >= 2 && parse_int(argv[1], &v))
       c->rx_sensors_ms = v < 30 ? 30 : v > 1000 ? 1000 : (int)v;
     c->rx_sensors_due = now_ms();
+  } else if (!strcmp(name, "zbitx_spectrum") && argc >= 1 && parse_bool(argv[0], &b)) {
+    // zbitx extension: zbitx_spectrum:true[,ms]; sends the radio's display
+    // spectrum as TCI_ZBITX_SPECTRUM binary frames every ms (default 100).
+    // It reuses the spectrum zbitx already computes, unlike the I/Q stream.
+    c->spectrum = b;
+    c->spectrum_ms = 100;
+    if (argc >= 2 && parse_int(argv[1], &v))
+      c->spectrum_ms = v < 50 ? 50 : v > 1000 ? 1000 : (int)v;
+    c->spectrum_due = now_ms();
+    send_to(slot, "zbitx_spectrum:%s,%d;", tf(b), c->spectrum_ms);
   } else if (!strcmp(name, "tx_sensors_enable")) {
     // accepted; nothing is sent yet
   } else if ((!strcmp(name, "audio_start") || !strcmp(name, "audio_stop")) && trx0) {
@@ -836,6 +848,31 @@ static void rx_sensors(void) {
   }
 }
 
+// Header as for the TCI streams; sample rate holds the span in Hz.
+#define SPECTRUM_MAX_BINS 1100
+static void spectrum_frames(void) {
+  long long now = now_ms();
+  static uint8_t frame[TCI_HEADER_BYTES + SPECTRUM_MAX_BINS];
+  int n = -1, span = 0;
+  for (int s = 0; s < WS_MAX_CLIENTS; s++) {
+    struct client *c = &clients[s];
+    if (!c->in_use || !c->spectrum || now < c->spectrum_due)
+      continue;
+    c->spectrum_due = now + c->spectrum_ms;
+    if (n < 0) {
+      n = tr_spectrum(frame + TCI_HEADER_BYTES, SPECTRUM_MAX_BINS, &span);
+      uint32_t h[16] = {0};
+      h[1] = (uint32_t)span;
+      h[5] = (uint32_t)n;
+      h[6] = TCI_ZBITX_SPECTRUM;
+      h[7] = 1;
+      memcpy(frame, h, sizeof(h)); // little-endian, as the Pi is
+    }
+    if (n > 0)
+      ws_send_binary(c->id, frame, TCI_HEADER_BYTES + n);
+  }
+}
+
 static void *service_main(void *arg) {
   (void)arg;
   struct timespec next;
@@ -871,6 +908,7 @@ static void *service_main(void *arg) {
       }
       publish_changes();
       rx_sensors();
+      spectrum_frames();
       cw_service();
     }
     pthread_mutex_unlock(&lock);

@@ -273,6 +273,20 @@ double tr_smeter_dbm(void) {
   return -127.0 + 6.0 * (s / 100) + (s % 100);
 }
 
+int tr_spectrum(uint8_t *out, int max, int *span_hz) {
+  extern int spectrum_span;
+  void web_get_spectrum(char *buff);
+  static char buff[2100]; // "RX " + up to 1025 bins (48 kHz span), or "TX " + 800
+  web_get_spectrum(buff);
+  if (strncmp(buff, "RX ", 3))
+    return 0;
+  int n = 0;
+  for (const char *p = buff + 3; *p && n < max; p++)
+    out[n++] = (uint8_t)(*p - ' '); // ' ' is the floor, 127 the top (95)
+  *span_hz = spectrum_span;
+  return n;
+}
+
 int tr_cw_send(const char *text) {
   int n = 0;
   for (; text[n] && cw_len < CW_QUEUE - 1; n++)

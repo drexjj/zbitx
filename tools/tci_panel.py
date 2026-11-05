@@ -6,7 +6,7 @@ Talks to zbitx's built-in TCI server (src/tci.c, TCP 50001 by default) over
 a WebSocket, using only the Python standard library plus Tkinter. Based on
 the WebSocket code in maxibitx's tools/tci_client.py (GPL-3.0).
 
-    tci_panel.py [--host H] [--port P] [--fullscreen] [--waterfall]
+    tci_panel.py [--host H] [--port P] [--fullscreen] [--no-waterfall] [--fps N]
 
 Shows the dial frequency, mode, S-meter, TX state and a UTC clock, and has
 controls for band, mode, tuning step, volume, mute, drive, RIT and PTT.
@@ -14,9 +14,11 @@ controls for band, mode, tuning step, volume, mute, drive, RIT and PTT.
 Tuning: mouse wheel over the frequency (or Up/Down, PgUp/PgDn keys) moves
 by the selected step; click the frequency to type one in (kHz or Hz).
 
---waterfall adds a +-24 kHz spectrum/waterfall from TCI's I/Q stream (click
-it to tune). It needs numpy (sudo apt install python3-numpy) and costs CPU
-on both the GUI and the radio, so it is off by default.
+The waterfall (click it to tune) draws the spectrum the radio already
+computes for its web UI and front panel, asked for with zbitx's
+zbitx_spectrum TCI extension, so it adds almost no work on the radio side.
+Its span follows the radio's SPAN control. --fps sets its rate (default 8);
+--no-waterfall leaves it out.
 
 PTT keys the radio the same way Hamlib PTT does (TCI trx without the "tci"
 audio source), so the transmit audio is the loopback, not the mic.
@@ -34,11 +36,6 @@ import threading
 import time
 import tkinter as tk
 from tkinter import simpledialog
-
-try:
-    import numpy as np
-except ImportError:
-    np = None
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -134,11 +131,7 @@ class WebSocket:
             head += bytes([0x80 | 126]) + struct.pack(">H", n)
         else:
             head += bytes([0x80 | 127]) + struct.pack(">Q", n)
-        if np is not None and n > 64:
-            m = np.frombuffer((mask * (n // 4 + 1))[:n], dtype=np.uint8)
-            body = (np.frombuffer(payload, dtype=np.uint8) ^ m).tobytes()
-        else:
-            body = bytes(b ^ mask[i & 3] for i, b in enumerate(payload))
+        body = bytes(b ^ mask[i & 3] for i, b in enumerate(payload))
         with self.send_lock:
             self.sock.sendall(head + mask + body)
 
@@ -153,13 +146,15 @@ class WebSocket:
 
 class TciLink(threading.Thread):
     """Background thread: connects (and reconnects), queues text commands
-    and I/Q frames for the GUI thread."""
+    for the GUI thread, and keeps the latest spectrum frame in .spectrum."""
 
-    def __init__(self, host, port, want_iq):
+    SPECTRUM_TYPE = 100  # TCI_ZBITX_SPECTRUM in src/tci_stream.h
+
+    def __init__(self, host, port, spectrum_ms):
         super().__init__(daemon=True)
-        self.host, self.port, self.want_iq = host, port, want_iq
+        self.host, self.port, self.spectrum_ms = host, port, spectrum_ms
         self.inbox = queue.Queue()
-        self.iq = queue.Queue(maxsize=64)
+        self.spectrum = None  # (span_hz, bytes), replaced by each new frame
         self.ws = None
         self.running = True
 
@@ -205,16 +200,12 @@ class TciLink(threading.Thread):
                     if cmd.lower() == "ready" and not ready:
                         ready = True
                         ws.send("rx_sensors_enable:true,200;")
-                        if self.want_iq:
-                            ws.send("iq_samplerate:48000;")
-                            ws.send("iq_start:0;")
+                        if self.spectrum_ms:
+                            ws.send(f"zbitx_spectrum:true,{self.spectrum_ms};")
             elif op == 2 and len(data) >= 64:
                 f = struct.unpack("<16I", data[:64])
-                if f[6] == 0 and f[2] == 3:  # I/Q stream, float32
-                    try:
-                        self.iq.put_nowait((f[1], data[64:64 + 4 * f[5]]))
-                    except queue.Full:
-                        pass  # GUI is behind; drop rather than lag
+                if f[6] == self.SPECTRUM_TYPE:
+                    self.spectrum = (f[1], data[64:64 + f[5]])
             elif op == 9:
                 ws.send(data, opcode=10)
             elif op == 8:
@@ -237,7 +228,7 @@ def s_units(dbm):
 
 
 class Panel:
-    def __init__(self, root, link, waterfall):
+    def __init__(self, root, link, fps):
         self.root, self.link = root, link
         self.freq = 0
         self.mode = ""
@@ -257,9 +248,13 @@ class Panel:
         self._build_top()
         self._build_bands()
         self._build_modes()
-        self.wf = Waterfall(root, self) if waterfall else None
-        self._build_controls()
+        # status and controls are packed from the bottom first, so on a small
+        # screen the waterfall shrinks rather than pushing them off
         self._build_status()
+        self._build_controls()
+        self.wf = Waterfall(root, self, fps) if fps else None
+        # GUI poll period: fast enough for the waterfall, otherwise 10 Hz
+        self.poll_ms = min(100, int(1000 / fps)) if fps else 100
 
         root.bind("<Up>", lambda e: self.tune_by(self.step))
         root.bind("<Down>", lambda e: self.tune_by(-self.step))
@@ -267,7 +262,7 @@ class Panel:
         root.bind("<Next>", lambda e: self.tune_by(-10 * self.step))
         root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
 
-        self.root.after(50, self.poll)
+        self.root.after(self.poll_ms, self.poll)
         self.tick_clock()
 
     # -- layout --
@@ -295,6 +290,13 @@ class Panel:
         meter.pack(anchor="w", fill="x")
         self.smeter = tk.Canvas(meter, width=200, height=14, bg=PANEL, highlightthickness=0)
         self.smeter.pack(side="left")
+        # bar items are made once and moved, not redrawn, on each reading
+        s9 = 200 * 54 // 84
+        self.sm_green = self.smeter.create_rectangle(0, 0, 0, 14, fill="#43a047", width=0)
+        self.sm_red = self.smeter.create_rectangle(s9, 0, s9, 14, fill="#e53935", width=0)
+        self.smeter.create_line(s9, 0, s9, 14, fill=DIM)
+        self.sm_fill = -1
+        self.sm_text = ""
         self.lbl_s = tk.Label(meter, text="S0", bg=BG, fg=FG, width=7, anchor="w",
                               font=("DejaVu Sans Mono", 10))
         self.lbl_s.pack(side="left", padx=4)
@@ -346,15 +348,15 @@ class Panel:
         return f, s
 
     def _build_controls(self):
+        row2 = tk.Frame(self.root, bg=BG)
+        row2.pack(side="bottom", fill="x", padx=6, pady=(2, 4))
         row = tk.Frame(self.root, bg=BG)
-        row.pack(fill="x", padx=6, pady=2)
+        row.pack(side="bottom", fill="x", padx=6, pady=2)
         fv, self.sc_vol = self._scale(row, "VOL", 0, 100, self.on_volume)
         fv.pack(side="left", fill="x", expand=True)
         fd, self.sc_drive = self._scale(row, "PWR", 0, 100, self.on_drive)
         fd.pack(side="left", fill="x", expand=True)
 
-        row2 = tk.Frame(self.root, bg=BG)
-        row2.pack(fill="x", padx=6, pady=(2, 4))
         self.btn_mute = self._btn(row2, "MUTE", self.toggle_mute, width=6)
         self.btn_mute.pack(side="left", padx=1)
         self.btn_rit = self._btn(row2, "RIT", self.toggle_rit, width=5)
@@ -507,18 +509,17 @@ class Panel:
         self.lbl_rit.config(text=f"RIT {self.rit:+d}" if self.rit_on else "")
 
     def show_smeter(self, dbm):
-        c = self.smeter
-        c.delete("all")
-        # -127 dBm (S0) .. -43 dBm (S9+30) across the bar
-        frac = max(0.0, min(1.0, (dbm + 127) / 84))
-        w = int(c.winfo_width() or 200)
-        s9 = int(w * 54 / 84)
-        fill = int(w * frac)
-        c.create_rectangle(0, 0, min(fill, s9), 14, fill="#43a047", width=0)
-        if fill > s9:
-            c.create_rectangle(s9, 0, fill, 14, fill="#e53935", width=0)
-        c.create_line(s9, 0, s9, 14, fill=DIM)
-        self.lbl_s.config(text=s_units(dbm))
+        # -127 dBm (S0) .. -43 dBm (S9+30) across the 200 px bar
+        fill = int(200 * max(0.0, min(1.0, (dbm + 127) / 84)))
+        s9 = 200 * 54 // 84
+        if fill != self.sm_fill:
+            self.sm_fill = fill
+            self.smeter.coords(self.sm_green, 0, 0, min(fill, s9), 14)
+            self.smeter.coords(self.sm_red, s9, 0, max(fill, s9), 14)
+        text = s_units(dbm)
+        if text != self.sm_text:
+            self.sm_text = text
+            self.lbl_s.config(text=text)
 
     def poll(self):
         try:
@@ -529,16 +530,18 @@ class Panel:
                 elif kind == "status":
                     self.connected = val == "connected"
                     self.lbl_status.config(text=val)
+                    self.lbl_freq.config(fg=ACCENT if self.connected else DIM)
                 elif kind == "disconnected":
                     self.connected = False
                     self.lbl_freq.config(fg=DIM)
-                if self.connected:
-                    self.lbl_freq.config(fg=ACCENT)
         except queue.Empty:
             pass
         if self.wf:
+            frame, self.link.spectrum = self.link.spectrum, None
+            if frame:
+                self.wf.feed(*frame)
             self.wf.pump()
-        self.root.after(50, self.poll)
+        self.root.after(self.poll_ms, self.poll)
 
     def tick_clock(self):
         self.lbl_clock.config(text=time.strftime("%H:%M:%SZ", time.gmtime()))
@@ -546,107 +549,125 @@ class Panel:
 
 
 class Waterfall:
-    """Spectrum + waterfall of TCI's I/Q stream (dial at the centre,
-    positive frequencies above the dial)."""
+    """Waterfall + spectrum trace of the radio's own display spectrum (the
+    zbitx_spectrum TCI extension): the dial at the centre, span set by the
+    radio's SPAN control.
 
-    N = 1024
-    H = 110
-    FPS = 8
+    Kept cheap for the Pi Zero: each frame writes one row into a PhotoImage
+    used as a ring buffer and shown twice on the canvas, so scrolling is two
+    coordinate moves instead of redrawing the image."""
 
-    def __init__(self, root, panel):
+    H = 110      # waterfall rows
+    TRACE = 40   # spectrum trace height (overlaid on the newest rows)
+
+    def __init__(self, root, panel, fps):
         self.panel = panel
-        self.c = tk.Canvas(root, height=self.H + 16, width=300, bg="black", highlightthickness=0, cursor="crosshair")
+        self.period = 1.0 / fps
+        self.c = tk.Canvas(root, height=60, width=300, bg="black",
+                           highlightthickness=0, cursor="crosshair")
         self.c.pack(fill="both", expand=True, padx=6, pady=2)
         self.c.bind("<Button-1>", self.click)
         self.c.bind("<Configure>", lambda e: self.resize())
-        self.w = 0
-        self.h = self.H
-        self.img = None
-        self.rows = None
-        self.buf = np.zeros(0, dtype=np.complex64)
-        self.rate = 48000
-        self.avg = None
+        self.w = self.h = 0
+        self.r = 0
+        self.photo = None
+        self.span = 0
+        self.bins = None
         self.last = 0.0
-        self.win = np.hanning(self.N).astype(np.float32)
-        self.lo, self.hi = -120.0, -50.0
-        x = np.linspace(0, 1, 256)
-        self.cmap = (np.stack([np.clip(1.5 * x - 0.3, 0, 1) * 255,
-                               np.clip(2.0 * x - 0.6, 0, 1) * 255 * 0.9 + np.clip(x * 3, 0, 1) * 25,
-                               np.clip(np.sin(x * np.pi) * 1.2, 0, 1) * 255 * (x < 0.7) + (x >= 0.7) * 120],
-                              axis=1)).astype(np.uint8)
+        self.colmap = None   # canvas column -> bin index
+        self.nbins = 0
+        self.got_any = False
+        self.c.create_line(0, 0, 0, 0, fill="#7fdcff", tags="trace")
+        # 96 levels (0..95), dark blue -> cyan -> yellow -> red
+        self.palette = [self._color(v / 95) for v in range(96)]
+
+    @staticmethod
+    def _color(x):
+        stops = [(0.0, (0, 0, 20)), (0.25, (0, 30, 140)), (0.5, (0, 170, 200)),
+                 (0.75, (240, 220, 0)), (1.0, (255, 40, 0))]
+        for (x0, c0), (x1, c1) in zip(stops, stops[1:]):
+            if x <= x1:
+                t = (x - x0) / (x1 - x0)
+                return "#%02x%02x%02x" % tuple(int(a + (b - a) * t) for a, b in zip(c0, c1))
+        return "#ff2800"
 
     def resize(self):
-        # width capped at 800 px to bound the per-frame work on a Pi Zero
-        w = max(100, min(800, self.c.winfo_width()))
+        w = max(100, self.c.winfo_width())
         h = max(40, self.c.winfo_height() - 16)
-        if (w, h) != (self.w, self.h) or self.rows is None:
-            self.w, self.h = w, h
-            self.rows = np.zeros((h, w, 3), dtype=np.uint8)
-            self.redraw_scale()
+        if (w, h) == (self.w, self.h):
+            return
+        self.w, self.h, self.r = w, h, 0
+        self.photo = tk.PhotoImage(width=w, height=h)
+        self.photo.put(self.palette[0], to=(0, 0, w, h))
+        self.c.delete("wf")
+        self.c.create_image(0, 0, image=self.photo, anchor="nw", tags=("wf", "wf_a"))
+        self.c.create_image(0, h, image=self.photo, anchor="nw", tags=("wf", "wf_b"))
+        # the second copy hangs below the waterfall; hide it under the scale strip
+        self.c.create_rectangle(0, h, w, h + 40, fill="black", width=0, tags=("wf", "mask"))
+        self.c.tag_lower("wf")
+        self.c.tag_raise("mask", "wf_b")
+        self.colmap = None
+        self.redraw_scale()
 
     def redraw_scale(self):
         c = self.c
         c.delete("scale")
-        if not self.w:
+        if not self.w or not self.span:
+            if self.w and not self.got_any:
+                c.create_text(self.w / 2, self.h / 2, fill=DIM, tags="scale",
+                              text="waiting for spectrum from the radio...")
             return
-        half = self.rate / 2
-        top_khz = int(half // 5000) * 5
-        for khz in range(-top_khz, top_khz + 1, 5):
-            x = (khz * 1000 + half) / self.rate * self.w
+        half = self.span / 2
+        step = 1 if self.span <= 3000 else 2 if self.span <= 8000 else 5
+        top = int(half // (step * 1000)) * step
+        for khz in range(-top, top + 1, step):
+            x = (khz * 1000 + half) / self.span * self.w
             c.create_line(x, self.h, x, self.h + 4, fill=DIM, tags="scale")
-            if khz % 10 == 0:
+            if khz % (2 * step) == 0:
                 c.create_text(x, self.h + 10, text=f"{khz:+d}" if khz else "0", fill=DIM,
                               font=("DejaVu Sans", 7), tags="scale")
         mid = self.w / 2
         c.create_line(mid, 0, mid, self.h, fill="#ff5252", dash=(2, 3), tags="scale")
 
     def click(self, e):
-        if not self.w or not self.panel.freq:
+        if not self.w or not self.span or not self.panel.freq:
             return
-        off = (e.x / self.w - 0.5) * self.rate
+        off = (e.x / self.w - 0.5) * self.span
         self.panel.tune(round((self.panel.freq + off) / 10) * 10)
 
+    def feed(self, span, data):
+        """Latest frame from the link thread; drawn at most at fps."""
+        if span != self.span:
+            self.span = span
+            self.got_any = True
+            self.redraw_scale()
+        self.bins = data
+
     def pump(self):
-        q = self.panel.link.iq
-        chunks = []
-        while True:
-            try:
-                rate, data = q.get_nowait()
-            except queue.Empty:
-                break
-            self.rate = rate
-            chunks.append(np.frombuffer(data, dtype="<f4"))
-        if chunks:
-            f = np.concatenate(chunks)
-            iq = (f[0::2] + 1j * f[1::2]).astype(np.complex64)
-            self.buf = np.concatenate([self.buf, iq])[-4 * self.N:]
         now = time.monotonic()
-        if len(self.buf) < self.N or now - self.last < 1.0 / self.FPS or not self.w:
+        if self.bins is None or not self.w or now - self.last < self.period:
             return
         self.last = now
-        spec = np.fft.fftshift(np.fft.fft(self.buf[-self.N:] * self.win))
-        p = 20 * np.log10(np.abs(spec) / self.N + 1e-12)
-        self.avg = p if self.avg is None or len(self.avg) != len(p) else 0.6 * self.avg + 0.4 * p
-        # slow auto-range: noise floor at the bottom fifth
-        floor = float(np.percentile(self.avg, 20))
-        self.lo += 0.1 * ((floor - 5) - self.lo)
-        self.hi = self.lo + 70
-        cols = np.interp(np.linspace(0, self.N - 1, self.w), np.arange(self.N), self.avg)
-        idx = np.clip((cols - self.lo) / (self.hi - self.lo) * 255, 0, 255).astype(np.uint8)
-        self.rows[1:] = self.rows[:-1]
-        self.rows[0] = self.cmap[idx]
-        frame = self.rows.copy()
-        # spectrum trace over the top 40 px
-        top = 40
-        ys = (top - np.clip((cols - self.lo) / (self.hi - self.lo), 0, 1) * top).astype(int)
-        under = np.arange(top)[:, None] >= ys[None, :]   # (top, w) mask below the trace
-        band = frame[:top]
-        band[under] = band[under] // 2 + np.array([0, 90, 110], dtype=np.uint8)
-        ppm = b"P6 %d %d 255\n" % (self.w, self.h) + frame.tobytes()
-        self.img = tk.PhotoImage(data=ppm, format="PPM")
-        self.c.delete("wf")
-        self.c.create_image(0, 0, image=self.img, anchor="nw", tags="wf")
-        self.c.tag_raise("scale")
+        bins, self.bins = self.bins, None
+        n = len(bins)
+        if not n:
+            return
+        if self.colmap is None or self.nbins != n:
+            self.nbins = n
+            self.colmap = [min(n - 1, int(x * n / self.w)) for x in range(self.w)]
+        vals = [bins[i] for i in self.colmap]
+        pal = self.palette
+        # newest row goes in above the previous one; the ring wraps
+        self.r = (self.r - 1) % self.h
+        self.photo.put("{" + " ".join([pal[v if v < 96 else 95] for v in vals]) + "}",
+                       to=(0, self.r))
+        self.c.coords("wf_a", 0, -self.r)
+        self.c.coords("wf_b", 0, self.h - self.r)
+        k = self.TRACE / 95
+        pts = []
+        for x, v in enumerate(vals):
+            pts += (x, self.TRACE - v * k)
+        self.c.coords("trace", *pts)
 
 
 def main():
@@ -654,28 +675,26 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=50001)
     ap.add_argument("--fullscreen", action="store_true")
-    ap.add_argument("--waterfall", action="store_true", help="show the I/Q waterfall (needs numpy)")
+    ap.add_argument("--no-waterfall", action="store_true", help="leave the waterfall out")
+    ap.add_argument("--fps", type=int, default=8, help="waterfall rows per second (default 8)")
     ap.add_argument("--geometry", default="", help="Tk window geometry, e.g. 480x320+0+0")
     a = ap.parse_args()
 
-    if a.waterfall and np is None:
-        print("tci_panel: --waterfall needs numpy (sudo apt install python3-numpy); continuing without it")
-        a.waterfall = False
+    fps = 0 if a.no_waterfall else max(1, min(20, a.fps))
 
     root = tk.Tk()
     if a.geometry:
         root.geometry(a.geometry)
     if a.fullscreen:
         root.attributes("-fullscreen", True)
-    link = TciLink(a.host, a.port, a.waterfall)
-    Panel(root, link, a.waterfall)
+    link = TciLink(a.host, a.port, int(1000 / fps) if fps else 0)
+    Panel(root, link, fps)
     link.start()
     try:
         root.mainloop()
     finally:
         link.running = False
         if link.ws:
-            link.send("iq_stop:0;")
             link.ws.close()
 
 

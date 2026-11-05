@@ -18,6 +18,9 @@ enum tci_stream_type {
   TCI_RX_AUDIO_STREAM = 1,
   TCI_TX_AUDIO_STREAM = 2,
   TCI_TX_CHRONO = 3,
+  // zbitx extension, sent only to clients that ask with zbitx_spectrum
+  // (tci.c): the radio's display spectrum, one uint8 per bin.
+  TCI_ZBITX_SPECTRUM = 100,
 };
 enum tci_sample_type { TCI_INT16 = 0, TCI_INT24 = 1, TCI_INT32 = 2, TCI_FLOAT32 = 3 };
 

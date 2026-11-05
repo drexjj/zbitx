@@ -10,6 +10,8 @@
 #ifndef TCI_RADIO_H
 #define TCI_RADIO_H
 
+#include <stdint.h>
+
 enum tr_mode { TR_USB, TR_LSB, TR_CW, TR_CWR, TR_AM, TR_DIGU, TR_FT8, TR_OTHER };
 
 #define TR_RIT_MAX 9999   // Hz, either way
@@ -42,6 +44,12 @@ int tr_wpm(void);
 void tr_set_wpm(int wpm);
 
 double tr_smeter_dbm(void);   // uncalibrated: S9 = -73 dBm
+
+// The receive spectrum the web UI and front panel draw (web_get_spectrum()):
+// one value per 46.875 Hz bin, 0 (display floor) to 95, lowest frequency
+// first, the dial at the centre. Returns the number of bins written (at most
+// max) and sets *span_hz; returns 0 while transmitting.
+int tr_spectrum(uint8_t *out, int max, int *span_hz);
 
 // CW text: queued and fed to the radio's text sender a little at a time
 // by tr_cw_service(). Sent only in CW/CWR.
