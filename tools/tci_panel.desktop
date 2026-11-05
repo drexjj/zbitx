@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=zBitx Panel
+Comment=Lightweight zBitx control panel (TCI)
+Icon=/home/pi/sbitx/zbitx_icon.png
+Exec=python3 /home/pi/sbitx/tools/tci_panel.py
+Path=/home/pi/sbitx
+Terminal=false
+Categories=HamRadio;
