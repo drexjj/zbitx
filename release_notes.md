@@ -1,3 +1,6 @@
+# v5.16
+- Added UTC clock on menu button
+
 # v5.15
 - Added support HPSDR Protocol 1 and TCI connections
 - Added software update button to the radio display menu
