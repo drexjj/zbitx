@@ -1,3 +1,6 @@
+# v5.18
+- Enhanced TCI GUI
+
 # v5.17
 - Added lightweight, TCI GUI to Pi desktop
 
