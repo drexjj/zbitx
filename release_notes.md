@@ -1,3 +1,6 @@
+# v5.17
+- Added lightweight, TCI GUI to Pi desktop
+
 # v5.16
 - Added UTC clock on menu button
 
