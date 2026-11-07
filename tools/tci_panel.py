@@ -9,7 +9,8 @@ the WebSocket code in maxibitx's tools/tci_client.py (GPL-3.0).
     tci_panel.py [--host H] [--port P] [--fullscreen] [--no-waterfall] [--fps N]
 
 Shows the dial frequency, mode, S-meter, TX state and a UTC clock, and has
-controls for band, mode, tuning step, volume, mute, drive, RIT and PTT.
+controls for band, mode, tuning step, volume, mute, drive, RIT, spectrum
+span, receive bandwidth and PTT. BW: tap for presets, mouse wheel for 50 Hz.
 
 Tuning: mouse wheel over the frequency (or Up/Down, PgUp/PgDn keys) moves
 by the selected step; click the frequency to type one in (kHz or Hz).
@@ -39,7 +40,17 @@ from tkinter import simpledialog
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-MODES = ["USB", "LSB", "CW", "CWR", "AM", "DIGU"]
+# (label shown, TCI modulation name). The radio calls digu DIGI; TCI also
+# reports the radio's FT8 mode as digu.
+MODES = [("USB", "usb"), ("LSB", "lsb"), ("CW", "cw"), ("CWR", "cwr"), ("AM", "am"), ("DIGI", "digu")]
+MODE_LABEL = {tci: label for label, tci in MODES}
+SPANS = ["25K", "10K", "8K", "6K", "2.5K"]   # the radio's SPAN choices
+# BW presets offered by the BW button, per mode (Hz; the radio allows 50..5000)
+BW_PRESETS = {
+    "USB": [1800, 2100, 2400, 2700, 3000, 3500], "LSB": [1800, 2100, 2400, 2700, 3000, 3500],
+    "CW": [100, 200, 300, 500, 800, 1200], "CWR": [100, 200, 300, 500, 800, 1200],
+    "AM": [2500, 3000, 4000, 5000], "DIGI": [500, 1000, 2000, 3000, 4000],
+}
 # band name -> (default dial frequency, low edge, high edge), Hz
 BANDS = [
     ("80", 3573000, 3500000, 4000000),
@@ -200,8 +211,11 @@ class TciLink(threading.Thread):
                     if cmd.lower() == "ready" and not ready:
                         ready = True
                         ws.send("rx_sensors_enable:true,200;")
+                        # also opts in to zbitx_span/bw/filter state
                         if self.spectrum_ms:
                             ws.send(f"zbitx_spectrum:true,{self.spectrum_ms};")
+                        else:
+                            ws.send("zbitx_spectrum:false;")
             elif op == 2 and len(data) >= 64:
                 f = struct.unpack("<16I", data[:64])
                 if f[6] == self.SPECTRUM_TYPE:
@@ -232,6 +246,9 @@ class Panel:
         self.root, self.link = root, link
         self.freq = 0
         self.mode = ""
+        self.span = ""
+        self.bw = 0
+        self.filt = None   # (low, high) Hz from the dial, from zbitx_filter
         self.tx = False
         self.mute = False
         self.rit_on = False
@@ -326,10 +343,10 @@ class Panel:
         row = tk.Frame(self.root, bg=BG)
         row.pack(fill="x", padx=6, pady=2)
         self.mode_btns = {}
-        for m in MODES:
-            b = self._btn(row, m, lambda m=m: self.link.send(f"modulation:0,{m.lower()};"))
+        for label, tci in MODES:
+            b = self._btn(row, label, lambda t=tci: self.link.send(f"modulation:0,{t};"))
             b.pack(side="left", padx=1, expand=True, fill="x")
-            self.mode_btns[m] = b
+            self.mode_btns[label] = b
         tk.Label(row, text=" step", bg=BG, fg=DIM).pack(side="left")
         self.step_var = tk.StringVar(value="1k")
         om = tk.OptionMenu(row, self.step_var, *[s for s, _ in STEPS], command=self.set_step)
@@ -364,7 +381,15 @@ class Panel:
         self._btn(row2, "-", lambda: self.rit_by(-10), width=2).pack(side="left", padx=1)
         self._btn(row2, "0", lambda: self.rit_set(0), width=2).pack(side="left", padx=1)
         self._btn(row2, "+", lambda: self.rit_by(10), width=2).pack(side="left", padx=1)
-        self.btn_ptt = tk.Button(row2, text="PTT", command=self.toggle_ptt, width=10,
+        self.btn_span = self._btn(row2, "SPAN", self.span_menu, width=8)
+        self.btn_span.pack(side="left", padx=(8, 1))
+        self.btn_bw = self._btn(row2, "BW", self.bw_menu, width=7)
+        self.btn_bw.pack(side="left", padx=1)
+        # wheel over BW nudges it by 50 Hz
+        self.btn_bw.bind("<MouseWheel>", lambda e: self.set_bw(self.bw + (50 if e.delta > 0 else -50)))
+        self.btn_bw.bind("<Button-4>", lambda e: self.set_bw(self.bw + 50))
+        self.btn_bw.bind("<Button-5>", lambda e: self.set_bw(self.bw - 50))
+        self.btn_ptt = tk.Button(row2, text="PTT", command=self.toggle_ptt, width=8,
                                  bg="#5d1f1f", fg="white", activebackground=TX_RED,
                                  relief="flat", bd=0, highlightthickness=0, pady=4,
                                  font=("DejaVu Sans", 11, "bold"))
@@ -450,6 +475,29 @@ class Panel:
     def rit_by(self, d):
         self.rit_set(self.rit + d)
 
+    def _popup(self, widget, choices, current, pick):
+        m = tk.Menu(self.root, tearoff=0, bg=PANEL, fg=FG, activebackground=ACCENT,
+                    activeforeground=BG, font=("DejaVu Sans", 12, "bold"))
+        for ch in choices:
+            m.add_command(label=("> " if str(ch) == str(current) else "   ") + str(ch),
+                          command=lambda ch=ch: pick(ch))
+        m.tk_popup(widget.winfo_rootx(), widget.winfo_rooty() - 10)
+
+    def span_menu(self):
+        self._popup(self.btn_span, SPANS, self.span,
+                    lambda s: self.link.send(f"zbitx_span:{s};"))
+
+    def bw_menu(self):
+        presets = list(BW_PRESETS.get(self.mode, BW_PRESETS["USB"]))
+        if self.bw and self.bw not in presets:
+            presets = sorted(presets + [self.bw])
+        self._popup(self.btn_bw, presets, self.bw, self.set_bw)
+
+    def set_bw(self, hz):
+        if not self.bw:
+            return
+        self.link.send(f"zbitx_bw:{max(50, min(5000, int(hz)))};")
+
     def toggle_ptt(self):
         self.link.send(f"trx:0,{'false' if self.tx else 'true'};")
 
@@ -465,8 +513,10 @@ class Panel:
                     self.freq = int(a[2])
                     self.show_freq()
             elif name == "modulation" and len(a) >= 2:
-                self.mode = a[1].upper()
+                self.mode = MODE_LABEL.get(a[1].lower(), a[1].upper())
                 self.lbl_mode.config(text=self.mode)
+                if self.wf:
+                    self.wf.draw_passband()
                 for m, b in self.mode_btns.items():
                     b.config(bg=ACCENT if m == self.mode else PANEL,
                              fg=BG if m == self.mode else FG)
@@ -492,6 +542,16 @@ class Panel:
             elif name == "rit_offset" and len(a) >= 2:
                 self.rit = int(a[1])
                 self.show_rit()
+            elif name == "zbitx_span" and a:
+                self.span = a[0]
+                self.btn_span.config(text=f"SPAN {self.span}")
+            elif name == "zbitx_bw" and a:
+                self.bw = int(a[0])
+                self.btn_bw.config(text=f"BW {self.bw}")
+            elif name == "zbitx_filter" and len(a) >= 2:
+                self.filt = (int(a[0]), int(a[1]))
+                if self.wf:
+                    self.wf.draw_passband()
             elif name in ("rx_sensors", "rx_smeter") and a:
                 self.show_smeter(float(a[-1]))
         except ValueError:
@@ -550,8 +610,9 @@ class Panel:
 
 class Waterfall:
     """Waterfall + spectrum trace of the radio's own display spectrum (the
-    zbitx_spectrum TCI extension): the dial at the centre, span set by the
-    radio's SPAN control.
+    zbitx_spectrum TCI extension): lowest frequency on the left, the dial at
+    the centre, span set by the radio's SPAN control, with the receive
+    passband shaded as on the radio's web UI.
 
     Kept cheap for the Pi Zero: each frame writes one row into a PhotoImage
     used as a ring buffer and shown twice on the canvas, so scrolling is two
@@ -608,6 +669,32 @@ class Waterfall:
         self.c.tag_raise("mask", "wf_b")
         self.colmap = None
         self.redraw_scale()
+        self.draw_passband()
+
+    def draw_passband(self):
+        """Shades the filter passband (zbitx_filter edges) over the waterfall;
+        LSB and CWR sit below the dial, AM either side of it."""
+        c = self.c
+        c.delete("pb")
+        p = self.panel
+        if not self.w or not self.span or not p.filt:
+            return
+        low, high = p.filt
+        if p.mode in ("LSB", "CWR"):
+            lo, hi = -high, -low
+        elif p.mode == "AM":
+            lo, hi = -high, high
+        else:
+            lo, hi = low, high
+        x0 = self.w / 2 + lo * self.w / self.span
+        x1 = self.w / 2 + hi * self.w / self.span
+        c.create_rectangle(x0, 0, x1, self.h, fill="#c8d6e5", stipple="gray25",
+                           width=0, tags="pb")
+        c.create_line(x0, 0, x0, self.h, fill="#c8d6e5", tags="pb")
+        c.create_line(x1, 0, x1, self.h, fill="#c8d6e5", tags="pb")
+        c.tag_raise("pb", "wf")
+        c.tag_raise("trace")
+        c.tag_raise("scale")
 
     def redraw_scale(self):
         c = self.c
@@ -618,13 +705,17 @@ class Waterfall:
                               text="waiting for spectrum from the radio...")
             return
         half = self.span / 2
-        step = 1 if self.span <= 3000 else 2 if self.span <= 8000 else 5
-        top = int(half // (step * 1000)) * step
-        for khz in range(-top, top + 1, step):
-            x = (khz * 1000 + half) / self.span * self.w
+        # ticks every `step` Hz, labels on every other tick (in kHz)
+        step = 500 if self.span <= 3000 else 1000 if self.span <= 10000 else 5000
+        top = int(half // step)
+        for k in range(-top, top + 1):
+            hz = k * step
+            x = (hz + half) / self.span * self.w
             c.create_line(x, self.h, x, self.h + 4, fill=DIM, tags="scale")
-            if khz % (2 * step) == 0:
-                c.create_text(x, self.h + 10, text=f"{khz:+d}" if khz else "0", fill=DIM,
+            if k % 2 == 0 and 12 < x < self.w - 12:
+                khz = hz / 1000
+                text = "0" if not hz else f"{khz:+g}"
+                c.create_text(x, self.h + 10, text=text, fill=DIM,
                               font=("DejaVu Sans", 7), tags="scale")
         mid = self.w / 2
         c.create_line(mid, 0, mid, self.h, fill="#ff5252", dash=(2, 3), tags="scale")
@@ -635,12 +726,15 @@ class Waterfall:
         off = (e.x / self.w - 0.5) * self.span
         self.panel.tune(round((self.panel.freq + off) / 10) * 10)
 
-    def feed(self, span, data):
+    def feed(self, _span_field, data):
         """Latest frame from the link thread; drawn at most at fps."""
-        if span != self.span:
+        # the bins are 46.875 Hz each, so the span follows from their count
+        span = len(data) * 46.875
+        if span and span != self.span:
             self.span = span
             self.got_any = True
             self.redraw_scale()
+            self.draw_passband()
         self.bins = data
 
     def pump(self):

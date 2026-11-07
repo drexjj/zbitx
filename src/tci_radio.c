@@ -280,11 +280,42 @@ int tr_spectrum(uint8_t *out, int max, int *span_hz) {
   web_get_spectrum(buff);
   if (strncmp(buff, "RX ", 3))
     return 0;
-  int n = 0;
-  for (const char *p = buff + 3; *p && n < max; p++)
-    out[n++] = (uint8_t)(*p - ' '); // ' ' is the floor, 127 the top (95)
+  // web_get_spectrum() lists the highest frequency first (the web UI draws
+  // it right to left), so reverse it.
+  int len = (int)strlen(buff + 3);
+  int n = len < max ? len : max;
+  for (int k = 0; k < n; k++)
+    out[k] = (uint8_t)(buff[3 + len - 1 - k] - ' '); // ' ' is the floor, 127 the top (95)
   *span_hz = spectrum_span;
   return n;
+}
+
+static const char *const spans[] = {"25K", "10K", "8K", "6K", "2.5K"};
+
+const char *tr_span(void) {
+  const char *v = field_str("SPAN");
+  return v ? v : "";
+}
+
+void tr_set_span(const char *span) {
+  for (int k = 0; k < (int)(sizeof(spans) / sizeof(spans[0])); k++)
+    if (!strcmp(span, spans[k])) {
+      ui_run(OP_FIELD, 0, "SPAN", spans[k]);
+      return;
+    }
+}
+
+int tr_bw(void) { return field_int_or("BW", 0); }
+
+void tr_set_bw(int hz) { // the BW field clamps to 50..5000
+  char v[16];
+  snprintf(v, sizeof(v), "%d", hz);
+  ui_run(OP_FIELD, 0, "BW", v);
+}
+
+void tr_filter(int *low, int *high) {
+  *low = field_int_or("LOW", 0);
+  *high = field_int_or("HIGH", 0);
 }
 
 int tr_cw_send(const char *text) {

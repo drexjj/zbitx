@@ -57,6 +57,7 @@ struct client {
   long long rx_sensors_due;
   int spectrum, spectrum_ms; // zbitx_spectrum extension
   long long spectrum_due;
+  int zbitx; // has sent a zbitx_* command, so gets zbitx_* state too
 };
 
 // State as last sent to the clients.
@@ -242,6 +243,45 @@ static void pub_wpm(const struct state *s) {
   pub.wpm = s->wpm;
 }
 
+// zbitx extension state, sent only to clients that have used a zbitx_*
+// command: zbitx_span:<25K|10K|8K|6K|2.5K>; zbitx_bw:<hz>;
+// zbitx_filter:<low>,<high>; (filter edges in Hz from the dial, both
+// positive; LSB and CWR mirror them below the dial).
+static struct {
+  char span[8];
+  int bw, low, high;
+} ext;
+
+static void ext_send(int slot) {
+  send_to(slot, "zbitx_span:%s;", ext.span);
+  send_to(slot, "zbitx_bw:%d;", ext.bw);
+  send_to(slot, "zbitx_filter:%d,%d;", ext.low, ext.high);
+}
+
+static void ext_publish(void) {
+  char span[8];
+  int bw = tr_bw(), low, high;
+  snprintf(span, sizeof(span), "%s", tr_span());
+  tr_filter(&low, &high);
+  int sc = strcmp(span, ext.span) != 0, bc = bw != ext.bw, fc = low != ext.low || high != ext.high;
+  if (!sc && !bc && !fc)
+    return;
+  memcpy(ext.span, span, sizeof(span));
+  ext.bw = bw;
+  ext.low = low;
+  ext.high = high;
+  for (int s = 0; s < WS_MAX_CLIENTS; s++) {
+    if (!clients[s].in_use || !clients[s].zbitx)
+      continue;
+    if (sc)
+      send_to(s, "zbitx_span:%s;", span);
+    if (bc)
+      send_to(s, "zbitx_bw:%d;", bw);
+    if (fc)
+      send_to(s, "zbitx_filter:%d,%d;", low, high);
+  }
+}
+
 // Sends whatever changed since it was last sent (a change made elsewhere).
 static void publish_changes(void) {
   struct state s;
@@ -273,6 +313,7 @@ static void publish_changes(void) {
     pub_wpm(&s);
   if (!s.mute)
     unmute_percent = tr_volume();
+  ext_publish();
 }
 
 /* ---- PTT ------------------------------------------------------------------ */
@@ -462,6 +503,13 @@ static void handle(int slot, char *cmd) {
   // Most commands name a receiver/transceiver first; only 0 exists.
   int trx0 = argc >= 1 && parse_int(argv[0], &v) && v == 0;
 
+  if (!strncmp(name, "zbitx_", 6) && !c->zbitx) {
+    // first zbitx_* command from this client: send it the extension state
+    ext_publish();
+    c->zbitx = 1;
+    ext_send(slot);
+  }
+
   if (!strcmp(name, "start")) {
     send_to(slot, "start;");
   } else if (argc == 0 && (!strcmp(name, "protocol") || !strcmp(name, "device") ||
@@ -646,6 +694,10 @@ static void handle(int slot, char *cmd) {
     if (argc >= 2 && parse_int(argv[1], &v))
       c->rx_sensors_ms = v < 30 ? 30 : v > 1000 ? 1000 : (int)v;
     c->rx_sensors_due = now_ms();
+  } else if (!strcmp(name, "zbitx_span") && argc >= 1) {
+    tr_set_span(argv[0]); // the change is published when it lands
+  } else if (!strcmp(name, "zbitx_bw") && argc >= 1 && parse_int(argv[0], &v)) {
+    tr_set_bw((int)v);
   } else if (!strcmp(name, "zbitx_spectrum") && argc >= 1 && parse_bool(argv[0], &b)) {
     // zbitx extension: zbitx_spectrum:true[,ms]; sends the radio's display
     // spectrum as TCI_ZBITX_SPECTRUM binary frames every ms (default 100).

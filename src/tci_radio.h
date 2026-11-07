@@ -51,6 +51,17 @@ double tr_smeter_dbm(void);   // uncalibrated: S9 = -73 dBm
 // max) and sets *span_hz; returns 0 while transmitting.
 int tr_spectrum(uint8_t *out, int max, int *span_hz);
 
+// Spectrum span, as the radio's SPAN selection ("25K", "10K", "8K", "6K",
+// "2.5K"). tr_set_span() ignores anything else.
+const char *tr_span(void);
+void tr_set_span(const char *span);
+
+// Receive bandwidth (the BW control, Hz) and the filter edges it sets, in
+// Hz from the dial, both positive whichever sideband (the LOW/HIGH fields).
+int tr_bw(void);
+void tr_set_bw(int hz);
+void tr_filter(int *low, int *high);
+
 // CW text: queued and fed to the radio's text sender a little at a time
 // by tr_cw_service(). Sent only in CW/CWR.
 int tr_cw_send(const char *text);  // returns characters accepted
